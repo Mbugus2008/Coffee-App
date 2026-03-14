@@ -1,0 +1,29 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "flutter run",
+			"type": "shell",
+			"command": "flutter",
+			"args": [
+				"run"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "flutter run (blue_thermal_printer example)",
+			"type": "shell",
+			"command": "flutter",
+			"args": [
+				"run"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}/third_party/blue_thermal_printer/example"
+			},
+			"isBackground": true,
+			"problemMatcher": []
+		}
+	]
+}
