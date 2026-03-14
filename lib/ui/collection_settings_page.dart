@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../data/collection_settings_model.dart';
 import '../services/collection_settings_service.dart';
+import 'app_drawer.dart' as app_drawer;
 import 'brand_logo.dart';
 
 class CollectionSettingsPage extends StatefulWidget {
@@ -67,8 +68,12 @@ class _CollectionSettingsPageState extends State<CollectionSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final routeName = ModalRoute.of(context)?.settings.name;
+    final currentRoute = routeName ?? '/collection-settings';
+
     return Scaffold(
       appBar: AppBar(title: const BrandedAppBarTitle('Collection Settings')),
+      drawer: app_drawer.AppDrawer(currentRoute: currentRoute),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : Padding(

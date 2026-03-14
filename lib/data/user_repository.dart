@@ -118,12 +118,6 @@ class UserRepository extends ChangeNotifier {
     return _db.getUserByUsername(u);
   }
 
-  Future<bool> userIsAdmin(String username) async {
-    final user = await getLocalUserByUsername(username);
-    if (user == null) return false;
-    return user.rights.trim().toLowerCase() == 'admin';
-  }
-
   Future<bool> userNeedsPasswordSetupLocal(String username) async {
     final local = await getLocalUserByUsername(username);
     if (local == null) return false;

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/daily_collection_repository.dart';
 import 'add_collection_page.dart';
+import 'app_drawer.dart' as app_drawer;
 import 'brand_logo.dart';
 
 class CollectionsListPage extends StatefulWidget {
@@ -41,6 +42,8 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
 
   @override
   Widget build(BuildContext context) {
+    final routeName = ModalRoute.of(context)?.settings.name;
+    final currentRoute = routeName ?? '/collections';
     final items = context.watch<DailyCollectionRepository>().items;
     final query = _filter.trim().toLowerCase();
 
@@ -77,6 +80,7 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
           },
         ),
       ),
+      drawer: app_drawer.AppDrawer(currentRoute: currentRoute),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(

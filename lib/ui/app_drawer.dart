@@ -1,8 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../data/user_model.dart';
-import '../data/user_repository.dart';
 import '../services/session_store.dart';
 import 'brand_logo.dart';
 
@@ -23,7 +20,6 @@ class AppDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final users = context.watch<UserRepository>().users;
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
@@ -66,30 +62,11 @@ class AppDrawer extends StatelessWidget {
             selected: currentRoute == '/dashboard',
             onTap: () => _navigate(context, '/dashboard'),
           ),
-          FutureBuilder<String?>(
-            future: SessionStore.instance.getCurrentUsername(),
-            builder: (context, snapshot) {
-              final currentUsername = (snapshot.data ?? '').trim().toLowerCase();
-              User? currentUser;
-              for (final user in users) {
-                if (user.username.trim().toLowerCase() == currentUsername) {
-                  currentUser = user;
-                  break;
-                }
-              }
-              final isAdmin =
-                  currentUser != null &&
-                  currentUser.rights.trim().toLowerCase() == 'admin';
-              if (!isAdmin) {
-                return const SizedBox.shrink();
-              }
-              return ListTile(
-                leading: const Icon(Icons.manage_accounts_outlined),
-                title: const Text('Users'),
-                selected: currentRoute == '/users',
-                onTap: () => _navigate(context, '/users'),
-              );
-            },
+          ListTile(
+            leading: const Icon(Icons.manage_accounts_outlined),
+            title: const Text('Users'),
+            selected: currentRoute == '/users',
+            onTap: () => _navigate(context, '/users'),
           ),
           ListTile(
             leading: const Icon(Icons.local_shipping_outlined),

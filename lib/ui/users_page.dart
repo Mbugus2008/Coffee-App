@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../data/user_model.dart';
 import '../data/user_repository.dart';
 import '../services/session_store.dart';
+import 'app_drawer.dart' as app_drawer;
 import 'brand_logo.dart';
 
 class UsersPage extends StatefulWidget {
@@ -14,24 +15,12 @@ class UsersPage extends StatefulWidget {
 }
 
 class _UsersPageState extends State<UsersPage> {
-  late final Future<bool> _canAccessUsers;
-
   @override
   void initState() {
     super.initState();
-    _canAccessUsers = _resolveAccess();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<UserRepository>().loadUsers();
     });
-  }
-
-  Future<bool> _resolveAccess() async {
-    final repository = context.read<UserRepository>();
-    final currentUsername = await SessionStore.instance.getCurrentUsername();
-    if (currentUsername == null || currentUsername.trim().isEmpty) {
-      return false;
-    }
-    return repository.userIsAdmin(currentUsername);
   }
 
   Future<void> _showUserDialog({User? user}) async {
@@ -92,169 +81,137 @@ class _UsersPageState extends State<UsersPage> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: _canAccessUsers,
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
+    final users = context.watch<UserRepository>().users;
+    final routeName = ModalRoute.of(context)?.settings.name;
+    final currentRoute = routeName ?? '/users';
 
-        if (snapshot.data != true) {
-          return Scaffold(
-            appBar: AppBar(
-              title: const BrandedAppBarTitle('Coffee Users'),
-              automaticallyImplyLeading: false,
-              leading: IconButton(
-                tooltip: 'Back to home',
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () {
-                  Navigator.of(
-                    context,
-                  ).pushNamedAndRemoveUntil('/dashboard', (route) => false);
-                },
-              ),
-            ),
-            body: Center(
-              child: Padding(
+    return Scaffold(
+      appBar: AppBar(
+        title: const BrandedAppBarTitle('Coffee Users'),
+        automaticallyImplyLeading: false,
+        leadingWidth: 96,
+        leading: Builder(
+          builder: (context) {
+            return Row(
+              children: [
+                IconButton(
+                  tooltip: 'Back to home',
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: () {
+                    Navigator.of(
+                      context,
+                    ).pushNamedAndRemoveUntil('/dashboard', (route) => false);
+                  },
+                ),
+                IconButton(
+                  tooltip: 'Menu',
+                  icon: const Icon(Icons.menu),
+                  onPressed: () => Scaffold.of(context).openDrawer(),
+                ),
+              ],
+            );
+          },
+        ),
+        actions: [
+          IconButton(
+            tooltip: 'Reload local users',
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              context.read<UserRepository>().loadUsers();
+            },
+          ),
+          IconButton(
+            tooltip: 'Farmers',
+            icon: const Icon(Icons.agriculture_outlined),
+            onPressed: () {
+              Navigator.of(context).pushNamed('/farmers');
+            },
+          ),
+          IconButton(
+            tooltip: 'Logout',
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              await SessionStore.instance.clearSession();
+              if (!context.mounted) return;
+              Navigator.of(
+                context,
+              ).pushNamedAndRemoveUntil('/login', (route) => false);
+            },
+          ),
+        ],
+      ),
+      drawer: app_drawer.AppDrawer(currentRoute: currentRoute),
+      body: Center(
+        child: users.isEmpty
+            ? Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.admin_panel_settings_outlined, size: 48),
+                    const Text('No users found.'),
                     const SizedBox(height: 12),
-                    const Text('Only admins can access the users screen.'),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: () {
-                        Navigator.of(context).pushNamedAndRemoveUntil(
-                          '/dashboard',
-                          (route) => false,
-                        );
-                      },
-                      child: const Text('Back to Dashboard'),
+                    FilledButton.icon(
+                      onPressed: _showUserDialog,
+                      icon: const Icon(Icons.person_add_alt_1),
+                      label: const Text('Add User'),
                     ),
                   ],
                 ),
-              ),
-            ),
-          );
-        }
-
-        final users = context.watch<UserRepository>().users;
-        return Scaffold(
-          appBar: AppBar(
-            title: const BrandedAppBarTitle('Coffee Users'),
-            automaticallyImplyLeading: false,
-            leading: IconButton(
-              tooltip: 'Back to home',
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () {
-                Navigator.of(
-                  context,
-                ).pushNamedAndRemoveUntil('/dashboard', (route) => false);
-              },
-            ),
-            actions: [
-              IconButton(
-                tooltip: 'Reload local users',
-                icon: const Icon(Icons.refresh),
-                onPressed: () {
-                  context.read<UserRepository>().loadUsers();
-                },
-              ),
-              IconButton(
-                tooltip: 'Farmers',
-                icon: const Icon(Icons.agriculture_outlined),
-                onPressed: () {
-                  Navigator.of(context).pushNamed('/farmers');
-                },
-              ),
-              IconButton(
-                tooltip: 'Logout',
-                icon: const Icon(Icons.logout),
-                onPressed: () async {
-                  await SessionStore.instance.clearSession();
-                  if (!context.mounted) return;
-                  Navigator.of(
-                    context,
-                  ).pushNamedAndRemoveUntil('/login', (route) => false);
-                },
-              ),
-            ],
-          ),
-          body: Center(
-            child: users.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text('No users found.'),
-                        const SizedBox(height: 12),
-                        FilledButton.icon(
-                          onPressed: _showUserDialog,
-                          icon: const Icon(Icons.person_add_alt_1),
-                          label: const Text('Add User'),
+              )
+            : ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: users.length,
+                separatorBuilder: (_, __) => const Divider(height: 24),
+                itemBuilder: (context, index) {
+                  final user = users[index];
+                  final details = <String>[
+                    user.username,
+                    if (user.rights.trim().isNotEmpty)
+                      'Rights: ${user.rights.trim()}',
+                    if (user.email.trim().isNotEmpty) user.email.trim(),
+                    if (user.phone.trim().isNotEmpty) user.phone.trim(),
+                  ];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      child: Text(
+                        user.name.trim().isEmpty
+                            ? user.username.trim().substring(0, 1).toUpperCase()
+                            : user.name.trim().substring(0, 1).toUpperCase(),
+                      ),
+                    ),
+                    title: Text(
+                      user.name.trim().isEmpty ? user.username : user.name,
+                    ),
+                    subtitle: Text(details.join(' • ')),
+                    trailing: PopupMenuButton<String>(
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'edit':
+                            _showUserDialog(user: user);
+                          case 'delete':
+                            _deleteUser(user);
+                        }
+                      },
+                      itemBuilder: (context) => const [
+                        PopupMenuItem<String>(
+                          value: 'edit',
+                          child: Text('Edit'),
+                        ),
+                        PopupMenuItem<String>(
+                          value: 'delete',
+                          child: Text('Delete'),
                         ),
                       ],
                     ),
-                  )
-                : ListView.separated(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: users.length,
-                    separatorBuilder: (_, __) => const Divider(height: 24),
-                    itemBuilder: (context, index) {
-                      final user = users[index];
-                      final details = <String>[
-                        user.username,
-                        if (user.rights.trim().isNotEmpty)
-                          'Rights: ${user.rights.trim()}',
-                        if (user.email.trim().isNotEmpty) user.email.trim(),
-                        if (user.phone.trim().isNotEmpty) user.phone.trim(),
-                      ];
-                      return ListTile(
-                        leading: CircleAvatar(
-                          child: Text(
-                            user.name.trim().isEmpty
-                                ? user.username.trim().substring(0, 1).toUpperCase()
-                                : user.name.trim().substring(0, 1).toUpperCase(),
-                          ),
-                        ),
-                        title: Text(
-                          user.name.trim().isEmpty ? user.username : user.name,
-                        ),
-                        subtitle: Text(details.join(' • ')),
-                        trailing: PopupMenuButton<String>(
-                          onSelected: (value) {
-                            switch (value) {
-                              case 'edit':
-                                _showUserDialog(user: user);
-                              case 'delete':
-                                _deleteUser(user);
-                            }
-                          },
-                          itemBuilder: (context) => const [
-                            PopupMenuItem<String>(
-                              value: 'edit',
-                              child: Text('Edit'),
-                            ),
-                            PopupMenuItem<String>(
-                              value: 'delete',
-                              child: Text('Delete'),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-          ),
-          floatingActionButton: FloatingActionButton.extended(
-            onPressed: _showUserDialog,
-            icon: const Icon(Icons.person_add_alt_1),
-            label: const Text('Add User'),
-          ),
-        );
-      },
+                  );
+                },
+              ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _showUserDialog,
+        icon: const Icon(Icons.person_add_alt_1),
+        label: const Text('Add User'),
+      ),
     );
   }
 }

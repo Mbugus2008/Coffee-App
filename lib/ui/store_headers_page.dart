@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../data/store_models.dart';
 import '../data/store_repository.dart';
 import 'add_store_header_page.dart';
+import 'app_drawer.dart' as app_drawer;
 import 'brand_logo.dart';
 import 'store_lines_page.dart';
 
@@ -15,12 +16,6 @@ class StoreHeadersPage extends StatefulWidget {
 }
 
 class _StoreHeadersPageState extends State<StoreHeadersPage> {
-  double? _toDouble(String text) {
-    final value = text.trim();
-    if (value.isEmpty) return null;
-    return double.tryParse(value);
-  }
-
   @override
   void initState() {
     super.initState();
@@ -50,127 +45,41 @@ class _StoreHeadersPageState extends State<StoreHeadersPage> {
   }
 
   Future<void> _openStoreHeaderCard(StoreHeader header) async {
-    final repository = context.read<StoreRepository>();
-    final messenger = ScaffoldMessenger.of(context);
-    final clientController = TextEditingController(text: header.client);
-    final factoryController = TextEditingController(text: header.factory);
-    final totalController = TextEditingController(
-      text: (header.total ?? 0).toStringAsFixed(2),
-    );
-    final commentsController = TextEditingController(text: header.comments);
-    final formKey = GlobalKey<FormState>();
-
-    final action = await showDialog<String>(
+    final shouldOpenLines = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('Store Header'),
-          content: Form(
-            key: formKey,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Entry: ${header.entry}'),
-                  const SizedBox(height: 6),
-                  Text('Date: ${_formatDate(header.date)}'),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: clientController,
-                    decoration: const InputDecoration(labelText: 'Farmer'),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Enter farmer';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  TextFormField(
-                    controller: factoryController,
-                    decoration: const InputDecoration(labelText: 'Factory'),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Enter factory';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  TextFormField(
-                    controller: totalController,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
-                    decoration: const InputDecoration(labelText: 'Total'),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Enter total';
-                      }
-                      if (_toDouble(value) == null) {
-                        return 'Enter a valid number';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  TextFormField(
-                    controller: commentsController,
-                    decoration: const InputDecoration(labelText: 'Comments'),
-                    minLines: 2,
-                    maxLines: 3,
-                  ),
-                ],
-              ),
-            ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Farmer: ${header.client}'),
+              const SizedBox(height: 6),
+              Text('Entry: ${header.entry}'),
+              const SizedBox(height: 6),
+              Text('Date: ${_formatDate(header.date)}'),
+              const SizedBox(height: 6),
+              Text('Factory: ${header.factory}'),
+              const SizedBox(height: 6),
+              Text('Total: ${(header.total ?? 0).toStringAsFixed(2)}'),
+            ],
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop('close'),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
               child: const Text('Close'),
             ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop('lines'),
-              child: const Text('Open Lines'),
-            ),
             FilledButton(
-              onPressed: () {
-                if (!(formKey.currentState?.validate() ?? false)) {
-                  return;
-                }
-                Navigator.of(dialogContext).pop('save');
-              },
-              child: const Text('Save'),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Open Lines'),
             ),
           ],
         );
       },
     );
 
-    if (action == 'save') {
-      final newTotal = _toDouble(totalController.text) ?? header.total;
-      final amountPaid = header.amountPaid;
-      final updated = header.copyWith(
-        client: clientController.text.trim(),
-        memberName: clientController.text.trim(),
-        factory: factoryController.text.trim(),
-        factoryName: factoryController.text.trim(),
-        total: newTotal,
-        comments: commentsController.text.trim(),
-        balance: newTotal == null
-            ? header.balance
-            : (newTotal - (amountPaid ?? 0)),
-      );
-      await repository.updateStoreHeader(updated);
-      if (!mounted) return;
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Store header updated.')),
-      );
-      return;
-    }
-
-    if (action == 'lines') {
+    if (shouldOpenLines == true) {
       await _openStoreLines(header);
     }
   }
@@ -186,6 +95,8 @@ class _StoreHeadersPageState extends State<StoreHeadersPage> {
   @override
   Widget build(BuildContext context) {
     final headers = context.watch<StoreRepository>().headers;
+    final routeName = ModalRoute.of(context)?.settings.name;
+    final currentRoute = routeName == '/' ? '/dashboard' : routeName;
 
     return Scaffold(
       appBar: AppBar(
@@ -200,6 +111,7 @@ class _StoreHeadersPageState extends State<StoreHeadersPage> {
           ),
         ],
       ),
+      drawer: app_drawer.AppDrawer(currentRoute: currentRoute ?? '/stores'),
       body: headers.isEmpty
           ? const Center(child: Text('No store headers yet.'))
           : ListView.separated(

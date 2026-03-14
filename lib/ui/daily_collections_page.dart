@@ -6,6 +6,7 @@ import '../data/daily_collection_repository.dart';
 import '../data/farmer_repository.dart';
 import '../services/bluetooth_printer_service.dart';
 import 'add_collection_page.dart';
+import 'app_drawer.dart' as app_drawer;
 import 'brand_logo.dart';
 
 class DailyCollectionsPage extends StatefulWidget {
@@ -227,6 +228,11 @@ class _DailyCollectionsPageState extends State<DailyCollectionsPage> {
                           );
                         },
                 ),
+                IconButton(
+                  tooltip: 'Menu',
+                  icon: const Icon(Icons.menu),
+                  onPressed: () => Scaffold.of(context).openDrawer(),
+                ),
               ],
             );
           },
@@ -257,6 +263,7 @@ class _DailyCollectionsPageState extends State<DailyCollectionsPage> {
           ),
         ],
       ),
+      drawer: app_drawer.AppDrawer(currentRoute: currentRoute ?? '/dashboard'),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
