@@ -24,6 +24,7 @@ class ClassicScaleService {
   Stream<String>? _readStream;
   String _buffer = '';
   String? _lastErrorMessage;
+  final RegExp _classicAddressPattern = RegExp(r'^[0-9A-F]{12}$');
 
   Stream<double> get weightStream => _weightController.stream;
   String? get lastErrorMessage => _lastErrorMessage;
@@ -37,26 +38,37 @@ class ClassicScaleService {
       return false;
     }
 
+    final scaleAddress = attachment.address.trim();
+    if (!_isClassicBluetoothAddress(scaleAddress)) {
+      _lastErrorMessage =
+          'Attached scale is not a valid Classic Bluetooth device. Re-select a paired SPP device in Bluetooth settings.';
+      debugPrint('[Scale] $_lastErrorMessage');
+      return false;
+    }
+
     await _readSub?.cancel();
+    _readSub = null;
     _buffer = '';
     _lastErrorMessage = null;
 
     if (await isConnected()) {
       debugPrint('[Scale] Already connected');
+      _ensureScaleReadSubscription();
       return true;
     }
 
     debugPrint(
-      '[Scale] Connecting to ${attachment.name} (${attachment.address.trim()})',
+      '[Scale] Connecting via Classic Bluetooth to ${attachment.name} ($scaleAddress)',
     );
 
     try {
       await _methodChannel.invokeMethod('connectScale', <String, dynamic>{
-        'address': attachment.address.trim(),
+        'address': scaleAddress,
       });
     } on PlatformException catch (error, stackTrace) {
       if (_isAlreadyConnectedError(error)) {
         debugPrint('[Scale] Already connected');
+        _ensureScaleReadSubscription();
         return true;
       }
       _lastErrorMessage = _describePlatformException(error);
@@ -68,6 +80,16 @@ class ClassicScaleService {
       debugPrint('[Scale] Connect failed: $error');
       debugPrintStack(stackTrace: stackTrace);
       return false;
+    }
+
+    _ensureScaleReadSubscription();
+    debugPrint('[Scale] Connected');
+    return true;
+  }
+
+  void _ensureScaleReadSubscription() {
+    if (_readSub != null) {
+      return;
     }
 
     _readSub =
@@ -84,17 +106,30 @@ class ClassicScaleService {
               },
               onDone: () {
                 debugPrint('[Scale] Read stream closed');
+                _readSub = null;
               },
             );
-    debugPrint('[Scale] Connected');
-    return true;
   }
 
   Future<bool> isConnected() async {
-    final connected = await _methodChannel.invokeMethod<dynamic>(
-      'isScaleConnected',
-    );
-    return connected == true;
+    try {
+      final connected = await _methodChannel.invokeMethod<dynamic>(
+        'isScaleConnected',
+      );
+      return connected == true;
+    } on MissingPluginException catch (error, stackTrace) {
+      _lastErrorMessage =
+          'Scale plugin is unavailable. Restart the app to re-register native plugins.';
+      debugPrint('[Scale] $_lastErrorMessage');
+      debugPrint('[Scale] Missing plugin detail: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return false;
+    } on PlatformException catch (error, stackTrace) {
+      _lastErrorMessage = _describePlatformException(error);
+      debugPrint('[Scale] isConnected failed: $_lastErrorMessage');
+      debugPrintStack(stackTrace: stackTrace);
+      return false;
+    }
   }
 
   Future<void> disconnect() async {
@@ -168,6 +203,16 @@ class ClassicScaleService {
   bool _isAlreadyConnectedError(PlatformException error) {
     return error.code == 'connect_error' &&
         (error.message?.toLowerCase().contains('already connected') ?? false);
+  }
+
+  bool _isClassicBluetoothAddress(String address) {
+    final normalized = address
+        .replaceAll(':', '')
+        .replaceAll('-', '')
+        .replaceAll(' ', '')
+        .trim()
+        .toUpperCase();
+    return _classicAddressPattern.hasMatch(normalized);
   }
 
   String _formatChunk(String chunk) {

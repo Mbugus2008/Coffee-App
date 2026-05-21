@@ -2,6 +2,7 @@ import 'package:path/path.dart' as path;
 import 'package:sqflite/sqflite.dart';
 
 import 'collection_settings_model.dart';
+import 'company_info_model.dart';
 import 'daily_collection_model.dart';
 import 'farmer_model.dart';
 import 'store_models.dart';
@@ -13,8 +14,9 @@ class UserDatabase {
   static final UserDatabase instance = UserDatabase._();
 
   static const _dbName = 'coffee.db';
-  static const _dbVersion = 9;
+  static const _dbVersion = 12;
   static const _tableCollectionSettings = 'collection_settings';
+  static const _tableCompanyInfo = 'company_info';
   static const _tableUsers = 'users';
   static const _tableFarmers = 'farmers';
   static const _tableDailyCollections = 'daily_collections';
@@ -24,6 +26,8 @@ class UserDatabase {
 
   Database? _database;
   bool _userSchemaEnsured = false;
+  bool _storeSchemaEnsured = false;
+  bool _companyInfoSchemaEnsured = false;
 
   Future<Database> get database async {
     final db = _database;
@@ -31,10 +35,18 @@ class UserDatabase {
       if (!_userSchemaEnsured) {
         await _ensureUsersSchema(db);
       }
+      if (!_storeSchemaEnsured) {
+        await _ensureStoreSchema(db);
+      }
+      if (!_companyInfoSchemaEnsured) {
+        await _ensureCompanyInfoSchema(db);
+      }
       return db;
     }
     _database = await _initDatabase();
     await _ensureUsersSchema(_database!);
+    await _ensureStoreSchema(_database!);
+    await _ensureCompanyInfoSchema(_database!);
     return _database!;
   }
 
@@ -117,6 +129,7 @@ class UserDatabase {
           ')',
         );
         await _createCollectionSettingsTable(db);
+        await _createCompanyInfoTable(db);
         await _createStoreHeadersTable(db);
         await _createStoresTable(db);
         await _createItemsTable(db);
@@ -216,6 +229,15 @@ class UserDatabase {
             'ALTER TABLE $_tableUsers ADD COLUMN Type TEXT NOT NULL DEFAULT ""',
           );
         }
+        if (oldVersion < 10) {
+          await _createCompanyInfoTable(db);
+        }
+        if (oldVersion < 11) {
+          await _ensureCollectionSettingsTable(db);
+        }
+        if (oldVersion < 12) {
+          await _ensureCompanyInfoSchema(db);
+        }
       },
     );
   }
@@ -231,23 +253,90 @@ class UserDatabase {
     _userSchemaEnsured = true;
   }
 
+  Future<void> _ensureStoreSchema(DatabaseExecutor db) async {
+    await _createStoreHeadersTable(db);
+    await _createStoresTable(db);
+    await _createItemsTable(db);
+    final storeColumns = await db.rawQuery('PRAGMA table_info($_tableStores)');
+    final hasItemDescription = storeColumns.any(
+      (row) => row['name'] == 'Item_Description',
+    );
+    if (!hasItemDescription) {
+      await db.execute(
+        'ALTER TABLE $_tableStores ADD COLUMN Item_Description TEXT NOT NULL DEFAULT ""',
+      );
+    }
+    _storeSchemaEnsured = true;
+  }
+
+  Future<void> _ensureCompanyInfoSchema(DatabaseExecutor db) async {
+    await _createCompanyInfoTable(db);
+    final columns = await db.rawQuery('PRAGMA table_info($_tableCompanyInfo)');
+    final hasPictureBlob = columns.any((row) => row['name'] == 'Picture_Blob');
+    if (!hasPictureBlob) {
+      await db.execute(
+        'ALTER TABLE $_tableCompanyInfo ADD COLUMN Picture_Blob BLOB',
+      );
+    }
+    final hasPictureMime = columns.any((row) => row['name'] == 'Picture_Mime');
+    if (!hasPictureMime) {
+      await db.execute(
+        'ALTER TABLE $_tableCompanyInfo ADD COLUMN Picture_Mime TEXT NOT NULL DEFAULT ""',
+      );
+    }
+
+    // Seed default row only after schema is fully compatible.
+    await db.insert(
+      _tableCompanyInfo,
+      CompanyInfo.empty.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    _companyInfoSchemaEnsured = true;
+  }
+
   Future<void> _createCollectionSettingsTable(DatabaseExecutor db) async {
     await db.execute(
       'CREATE TABLE IF NOT EXISTS $_tableCollectionSettings('
       'ID INTEGER PRIMARY KEY CHECK (ID = 1), '
       'Crop TEXT NOT NULL, '
+      'Coffee_Type TEXT NOT NULL DEFAULT "", '
       'Tare_Weight REAL NOT NULL'
       ')',
     );
-    await db.insert(
-      _tableCollectionSettings,
-      CollectionSettings.defaults.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.ignore,
+  }
+
+  Future<void> _createCompanyInfoTable(DatabaseExecutor db) async {
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS $_tableCompanyInfo('
+      'ID INTEGER PRIMARY KEY CHECK (ID = 1), '
+      'Name TEXT NOT NULL, '
+      'Address TEXT NOT NULL, '
+      'Phone_No TEXT NOT NULL, '
+      'E_Mail TEXT NOT NULL, '
+      'Picture_Blob BLOB, '
+      'Picture_Mime TEXT NOT NULL DEFAULT ""'
+      ')',
     );
   }
 
   Future<void> _ensureCollectionSettingsTable(DatabaseExecutor db) async {
     await _createCollectionSettingsTable(db);
+    final columns = await db.rawQuery(
+      'PRAGMA table_info($_tableCollectionSettings)',
+    );
+    final hasCoffeeType = columns.any((row) => row['name'] == 'Coffee_Type');
+    if (!hasCoffeeType) {
+      await db.execute(
+        'ALTER TABLE $_tableCollectionSettings ADD COLUMN Coffee_Type TEXT NOT NULL DEFAULT ""',
+      );
+    }
+
+    // Seed default row only after schema is fully compatible.
+    await db.insert(
+      _tableCollectionSettings,
+      CollectionSettings.defaults.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
   }
 
   Future<void> _createStoreHeadersTable(DatabaseExecutor db) async {
@@ -292,6 +381,7 @@ class UserDatabase {
       'Entry TEXT NOT NULL, '
       'Client TEXT NOT NULL, '
       'Item TEXT NOT NULL, '
+      'Item_Description TEXT NOT NULL, '
       'Variant TEXT NOT NULL, '
       'Amount REAL, '
       'Quantity REAL, '
@@ -488,7 +578,30 @@ class UserDatabase {
       await db.close();
       _database = null;
       _userSchemaEnsured = false;
+      _storeSchemaEnsured = false;
+      _companyInfoSchemaEnsured = false;
     }
+  }
+
+  Future<CompanyInfo> getCompanyInfo() async {
+    final db = await database;
+    await _ensureCompanyInfoSchema(db);
+    final rows = await db.query(_tableCompanyInfo, limit: 1);
+    if (rows.isEmpty) {
+      await saveCompanyInfo(CompanyInfo.empty);
+      return CompanyInfo.empty;
+    }
+    return CompanyInfo.fromMap(rows.first);
+  }
+
+  Future<void> saveCompanyInfo(CompanyInfo info) async {
+    final db = await database;
+    await _ensureCompanyInfoSchema(db);
+    await db.insert(
+      _tableCompanyInfo,
+      info.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   Future<void> replaceFarmers(List<Farmer> farmers) async {
@@ -698,6 +811,31 @@ class UserDatabase {
     );
   }
 
+  Future<List<StoreHeader>> getPendingStoreHeaders() async {
+    final db = await database;
+    final rows = await db.query(
+      _tableStoreHeaders,
+      where: 'COALESCE(Sent, 0) = 0',
+      orderBy: 'Date DESC, ID DESC',
+    );
+    return rows.map(StoreHeader.fromMap).toList();
+  }
+
+  Future<int> updateStoreHeaderBcSyncStatus({
+    required String entry,
+    required String status,
+  }) async {
+    final db = await database;
+    final normalizedStatus = status.trim().toLowerCase();
+    final synced = normalizedStatus == 'synced';
+    return db.update(
+      _tableStoreHeaders,
+      {'Sent': synced ? 1 : 0, 'Posted': synced ? 1 : 0},
+      where: 'Entry = ?',
+      whereArgs: [entry],
+    );
+  }
+
   Future<void> replaceStores(List<Store> stores) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -725,6 +863,52 @@ class UserDatabase {
       _tableStores,
       store.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> updateStore(Store store) async {
+    final db = await database;
+    final id = store.id;
+    if (id == null) {
+      await insertStore(store);
+      return;
+    }
+
+    await db.update(
+      _tableStores,
+      store.toMap(),
+      where: 'ID = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteStoreById(int id) async {
+    final db = await database;
+    await db.delete(_tableStores, where: 'ID = ?', whereArgs: [id]);
+  }
+
+  Future<List<Store>> getPendingStores() async {
+    final db = await database;
+    final rows = await db.query(
+      _tableStores,
+      where: 'COALESCE(Sent, 0) = 0',
+      orderBy: 'Date DESC, ID DESC',
+    );
+    return rows.map(Store.fromMap).toList();
+  }
+
+  Future<int> updateStoreBcSyncStatus({
+    required int id,
+    required String status,
+  }) async {
+    final db = await database;
+    final normalizedStatus = status.trim().toLowerCase();
+    final synced = normalizedStatus == 'synced';
+    return db.update(
+      _tableStores,
+      {'Sent': synced ? 1 : 0},
+      where: 'ID = ?',
+      whereArgs: [id],
     );
   }
 

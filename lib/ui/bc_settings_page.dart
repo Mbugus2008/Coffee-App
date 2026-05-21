@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../services/bc/bc_odata_client.dart';
 import '../services/bc/bc_settings.dart';
 import '../services/bc/bc_settings_store.dart';
+import '../services/collection_settings_service.dart';
 
 class _FactoryOption {
   const _FactoryOption({required this.code, required this.name});
@@ -31,6 +32,9 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   final _factoryController = TextEditingController();
+  final _cropController = TextEditingController();
+  final _coffeeTypeController = TextEditingController();
+  final _tareWeightController = TextEditingController();
 
   String? _selectedFactory;
   bool _loadingFactories = false;
@@ -39,6 +43,8 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
 
   bool _loading = true;
   bool _saving = false;
+  bool _loadingSetup = false;
+  String? _setupError;
   bool _hidePassword = true;
 
   @override
@@ -49,12 +55,18 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
 
   Future<void> _load() async {
     final settings = await BcSettingsStore.instance.load();
+    final collectionSettings = await CollectionSettingsService.instance.load();
     if (!mounted) return;
     _baseUrlController.text = settings.odataBaseUrl;
     _companyController.text = settings.company;
     _usernameController.text = settings.username;
     _passwordController.text = settings.password;
     _factoryController.text = settings.factory;
+    _cropController.text = collectionSettings.crop;
+    _coffeeTypeController.text = collectionSettings.coffeeType;
+    _tareWeightController.text = collectionSettings.tareWeight.toStringAsFixed(
+      2,
+    );
     _selectedFactory = settings.factory.trim().isEmpty
         ? null
         : settings.factory.trim();
@@ -124,6 +136,57 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
     }
   }
 
+  Future<void> _loadSetupFromBc() async {
+    if (_loadingSetup) return;
+
+    setState(() {
+      _loadingSetup = true;
+      _setupError = null;
+    });
+
+    try {
+      final settings = _settingsFromForm();
+      final setup = await CollectionSettingsService.instance.syncFromBcSetup(
+        overrideSettings: settings,
+        persistFactoryToStore: false,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _cropController.text = setup.crop;
+        _coffeeTypeController.text = setup.coffeeType;
+        _tareWeightController.text = setup.tareWeight.toStringAsFixed(2);
+      });
+
+      final rows = await _odataClient.getAll(settings, 'Setup', top: 1);
+      if (rows.isNotEmpty) {
+        final row = rows.first;
+        final factory =
+            ((row['Factory'] as String?) ??
+                    (row['Factory_Name'] as String?) ??
+                    (row['Factory Name'] as String?) ??
+                    '')
+                .trim();
+        if (factory.isNotEmpty && mounted) {
+          setState(() {
+            _factoryController.text = factory;
+            _selectedFactory = factory;
+          });
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _setupError = 'Unable to load Setup: $e';
+      });
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _loadingSetup = false;
+      });
+    }
+  }
+
   @override
   void dispose() {
     _baseUrlController.dispose();
@@ -131,6 +194,9 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
     _usernameController.dispose();
     _passwordController.dispose();
     _factoryController.dispose();
+    _cropController.dispose();
+    _coffeeTypeController.dispose();
+    _tareWeightController.dispose();
     super.dispose();
   }
 
@@ -142,17 +208,27 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
     });
 
     final settings = _settingsFromForm();
+    final crop = _cropController.text.trim();
+    final coffeeType = _coffeeTypeController.text.trim();
+    final tareWeight = double.parse(_tareWeightController.text.trim());
 
     await BcSettingsStore.instance.save(settings);
+    await CollectionSettingsService.instance.save(
+      (await CollectionSettingsService.instance.load()).copyWith(
+        crop: crop,
+        coffeeType: coffeeType,
+        tareWeight: tareWeight,
+      ),
+    );
 
     if (!mounted) return;
     setState(() {
       _saving = false;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Business Central settings saved.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Settings saved.')));
 
     if (widget.onSaved != null) {
       try {
@@ -169,7 +245,7 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Business Central Settings'),
+        title: const Text('Settings'),
         leading: IconButton(
           tooltip: 'Back',
           icon: const Icon(Icons.arrow_back),
@@ -184,6 +260,13 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
                 key: _formKey,
                 child: ListView(
                   children: [
+                    Text(
+                      'Business Central',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     TextFormField(
                       controller: _baseUrlController,
                       decoration: const InputDecoration(
@@ -244,6 +327,84 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
                       ),
                       validator: (value) {
                         if ((value ?? '').isEmpty) return 'Enter password';
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Collection Settings',
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _loadingSetup ? null : _loadSetupFromBc,
+                          icon: _loadingSetup
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.download_outlined),
+                          label: const Text('Load Setup'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _cropController,
+                      decoration: const InputDecoration(
+                        labelText: 'Crop',
+                        hintText: 'e.g. 2025/2026',
+                      ),
+                      validator: (value) {
+                        if ((value ?? '').trim().isEmpty) {
+                          return 'Enter crop';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _coffeeTypeController,
+                      decoration: const InputDecoration(
+                        labelText: 'Coffee Type',
+                        hintText: 'e.g. Cherry',
+                      ),
+                      validator: (value) {
+                        if ((value ?? '').trim().isEmpty) {
+                          return 'Enter coffee type';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: _tareWeightController,
+                      decoration: const InputDecoration(
+                        labelText: 'Tare Weight Per Bag (kg)',
+                        hintText: '0.00',
+                      ),
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      validator: (value) {
+                        final trimmed = value?.trim() ?? '';
+                        if (trimmed.isEmpty) {
+                          return 'Enter tare weight';
+                        }
+                        final parsed = double.tryParse(trimmed);
+                        if (parsed == null) {
+                          return 'Enter a valid tare weight';
+                        }
+                        if (parsed < 0) {
+                          return 'Tare weight cannot be negative';
+                        }
                         return null;
                       },
                     ),
@@ -317,6 +478,15 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
                       const SizedBox(height: 8),
                       Text(
                         _factoriesError!,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                    if (_setupError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        _setupError!,
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.error,
                         ),

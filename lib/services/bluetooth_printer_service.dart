@@ -4,6 +4,7 @@ import '../data/daily_collection_model.dart';
 import '../data/store_models.dart';
 import 'bluetooth_serial_service.dart';
 import 'bluetooth_settings_service.dart';
+import 'company_info_service.dart';
 
 class PrinterDeviceInfo {
   const PrinterDeviceInfo({
@@ -254,6 +255,12 @@ class BluetoothPrinterService {
   }
 
   Future<void> printReceipt(DailyCollection collection) async {
+    final companyInfo = await CompanyInfoService.instance.loadLocal();
+    final companyName = companyInfo.name.trim();
+    if (companyName.isNotEmpty) {
+      await _printer.printCustom(companyName, 1, 1);
+      await _printer.printNewLine();
+    }
     await _printer.printCustom('Collection\nReceipt', 2, 1);
     await _printer.printNewLine();
     await _printReceiptField('Farmer', collection.farmersName);
@@ -281,18 +288,32 @@ class BluetoothPrinterService {
   }
 
   Future<void> printStoresReceipt(StoreHeader header, List<Store> lines) async {
+    final companyInfo = await CompanyInfoService.instance.loadLocal();
+    final companyName = companyInfo.name.trim();
+    final poBox = companyInfo.address.trim();
+    final factoryLabel = header.factory.trim().isNotEmpty
+        ? header.factory
+        : header.factoryName;
+
+    if (companyName.isNotEmpty) {
+      await _printer.printCustom(companyName, 1, 1);
+    }
+    if (poBox.isNotEmpty) {
+      await _printer.printCustom('P.O Box: $poBox', 0, 1);
+    }
+    if (factoryLabel.isNotEmpty) {
+      await _printer.printCustom('Factory: $factoryLabel', 0, 1);
+    }
+    if (companyName.isNotEmpty || poBox.isNotEmpty || factoryLabel.isNotEmpty) {
+      await _printer.printNewLine();
+    }
+
     await _printer.printCustom('Stores Receipt', 2, 1);
     await _printer.printNewLine();
 
     await _printReceiptField('Entry', header.entry, ellipsisAtStart: true);
     await _printReceiptField('Farmer', header.memberName);
     await _printReceiptField('Number', header.client);
-    final factoryLabel = header.factoryName.trim().isNotEmpty
-        ? header.factoryName
-        : header.factory;
-    if (factoryLabel.trim().isNotEmpty) {
-      await _printReceiptField('Factory', factoryLabel);
-    }
     if ((header.collector.trim()).isNotEmpty) {
       await _printReceiptField('Collector', header.collector);
     }
@@ -313,12 +334,13 @@ class BluetoothPrinterService {
 
     for (final line in lines) {
       final quantity = (line.quantity ?? 0).toStringAsFixed(2);
-      final left = '${line.item} x$quantity';
-      final total =
-          (line.lineTotal ?? ((line.amount ?? 0) * (line.quantity ?? 0)))
-              .toStringAsFixed(2);
+      final itemLabel = line.itemDescription.trim().isNotEmpty
+          ? line.itemDescription.trim()
+          : line.item;
+      final total = (line.amount ?? 0).toStringAsFixed(2);
+      await _printer.printCustom(_truncateForColumn(itemLabel, 32), 0, 0);
       await _printer.printLeftRight(
-        _truncateForColumn(left, 18),
+        _truncateForColumn('x$quantity', 18),
         _truncateForColumn(total, 14, ellipsisAtStart: true),
         1,
         format: '%-18s%14s%n',
@@ -329,6 +351,12 @@ class BluetoothPrinterService {
     }
 
     await _printer.printNewLine();
+    final paymodeLabel = header.paymode == 1
+        ? 'Credit'
+        : header.paymode == 0
+        ? 'Cash'
+        : '-';
+    await _printReceiptField('Paymode', paymodeLabel);
     await _printReceiptField('Total', (header.total ?? 0).toStringAsFixed(2));
     await _printReceiptField(
       'Paid',
@@ -338,6 +366,12 @@ class BluetoothPrinterService {
       'Balance',
       (header.balance ?? 0).toStringAsFixed(2),
     );
+    await _printer.printNewLine();
+    await _printer.printCustom('Received by: ___________________', 1, 0);
+    await _printer.printNewLine();
+    await _printer.printCustom('ID No:       ___________________', 1, 0);
+    await _printer.printNewLine();
+    await _printer.printCustom('Signature:   ___________________', 1, 0);
     await _printer.printNewLine();
     await _printer.printCustom('Thank you', 1, 1);
     await _printer.printNewLine();

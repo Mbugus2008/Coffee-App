@@ -30,6 +30,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -527,6 +528,92 @@ public class BlueThermalPrinterPlugin implements FlutterPlugin, ActivityAware,Me
     return sw.toString();
   }
 
+  private BluetoothSocket connectWithFallback(BluetoothDevice device) throws Exception {
+    Exception lastError = null;
+    final List<String> attempts = new ArrayList<>();
+
+    attempts.add("secure-rfcomm");
+    for (String strategy : attempts) {
+      BluetoothSocket socket = null;
+      try {
+        if ("secure-rfcomm".equals(strategy)) {
+          socket = device.createRfcommSocketToServiceRecord(MY_UUID);
+        }
+
+        if (socket == null) {
+          throw new IOException("socket connection not established");
+        }
+
+        mBluetoothAdapter.cancelDiscovery();
+        Log.i(TAG, "connect attempt strategy=" + strategy);
+        socket.connect();
+        return socket;
+      } catch (Exception ex) {
+        lastError = ex;
+        Log.w(TAG, "connect attempt failed strategy=" + strategy + " message=" + ex.getMessage());
+        closeQuietly(socket);
+      }
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.GINGERBREAD_MR1) {
+      attempts.add("insecure-rfcomm");
+      BluetoothSocket socket = null;
+      try {
+        socket = device.createInsecureRfcommSocketToServiceRecord(MY_UUID);
+        if (socket == null) {
+          throw new IOException("socket connection not established");
+        }
+
+        mBluetoothAdapter.cancelDiscovery();
+        Log.i(TAG, "connect attempt strategy=insecure-rfcomm");
+        socket.connect();
+        return socket;
+      } catch (Exception ex) {
+        lastError = ex;
+        Log.w(TAG, "connect attempt failed strategy=insecure-rfcomm message=" + ex.getMessage());
+        closeQuietly(socket);
+      }
+    }
+
+    attempts.add("legacy-channel-1");
+    BluetoothSocket socket = null;
+    try {
+      Method method = device.getClass().getMethod("createRfcommSocket", int.class);
+      socket = (BluetoothSocket) method.invoke(device, 1);
+      if (socket == null) {
+        throw new IOException("socket connection not established");
+      }
+
+      mBluetoothAdapter.cancelDiscovery();
+      Log.i(TAG, "connect attempt strategy=legacy-channel-1");
+      socket.connect();
+      return socket;
+    } catch (Exception ex) {
+      lastError = ex;
+      Log.w(TAG, "connect attempt failed strategy=legacy-channel-1 message=" + ex.getMessage());
+      closeQuietly(socket);
+    }
+
+    if (lastError != null) {
+      throw new IOException(
+              "All Bluetooth socket connection strategies failed: " + attempts.toString(),
+              lastError
+      );
+    }
+
+    throw new IOException("Unable to establish Bluetooth socket connection");
+  }
+
+  private void closeQuietly(BluetoothSocket socket) {
+    if (socket == null) {
+      return;
+    }
+    try {
+      socket.close();
+    } catch (Exception ignored) {
+    }
+  }
+
   /**
    * @param result  result
    * @param address address
@@ -546,6 +633,13 @@ public class BlueThermalPrinterPlugin implements FlutterPlugin, ActivityAware,Me
     ConnectedThread currentThread = scale ? SCALE_THREAD : THREAD;
 
     if (currentThread != null) {
+      if (!currentThread.isAlive()) {
+        clearThread(currentThread);
+        currentThread = null;
+      }
+    }
+
+    if (currentThread != null) {
       result.error("connect_error", "already connected", null);
       return;
     }
@@ -558,18 +652,8 @@ public class BlueThermalPrinterPlugin implements FlutterPlugin, ActivityAware,Me
           return;
         }
 
-        BluetoothSocket socket = device.createRfcommSocketToServiceRecord(MY_UUID);
-
-        if (socket == null) {
-          result.error("connect_error", "socket connection not established", null);
-          return;
-        }
-
-        // Cancel bt discovery, even though we didn't start it
-        mBluetoothAdapter.cancelDiscovery();
-
         try {
-          socket.connect();
+          BluetoothSocket socket = connectWithFallback(device);
           ConnectedThread connectedThread = new ConnectedThread(socket, scale);
           if (scale) {
             SCALE_THREAD = connectedThread;

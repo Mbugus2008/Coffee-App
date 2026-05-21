@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -111,6 +111,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
 
     List<_BluetoothChoice> devices = [];
     bool connected = false;
+    bool scaleConnected = false;
     BluetoothAttachment? attachedPrinter;
     BluetoothAttachment? attachedScale;
     String? loadError;
@@ -167,6 +168,9 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
 
           connected = await BluetoothPrinterService.instance
               .isAttachedPrinterConnected()
+              .timeout(const Duration(seconds: 5), onTimeout: () => false);
+          scaleConnected = await ClassicScaleService.instance
+              .isConnected()
               .timeout(const Duration(seconds: 5), onTimeout: () => false);
           attachedPrinter = await BluetoothSettingsService.instance
               .getAttachedPrinter();
@@ -233,6 +237,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
       _attachedScale = attachedScale;
       _selectedPrinter = selectedPrinter;
       _selectedScale = selectedScale;
+      _isScaleConnected = scaleConnected;
       _loadError = loadError;
       _loading = false;
     });
@@ -270,7 +275,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
               leading: const Icon(Icons.bluetooth),
               title: Text(device.name),
               subtitle: Text(
-                '${device.address} • ${device.source}${device.supportsPrinter ? ' • Printer' : ''}${device.supportsScale ? ' • Scale' : ''}',
+                '${device.address} ΓÇó ${device.source}${device.supportsPrinter ? ' ΓÇó Printer' : ''}${device.supportsScale ? ' ΓÇó Scale' : ''}',
               ),
               onTap: () => Navigator.of(context).pop(device),
             );
@@ -489,8 +494,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ListView(
           children: [
             if (_loading) ...[
               Row(
@@ -681,58 +685,62 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
               ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
-            Expanded(
-              child: _devices.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'No paired Bluetooth devices found. Pair devices in phone settings then tap refresh.',
-                        textAlign: TextAlign.center,
-                      ),
-                    )
-                  : ListView.separated(
-                      itemCount: _devices.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final device = _devices[index];
-                        final capabilities = <String>[
-                          if (device.supportsPrinter) 'Printer',
-                          if (device.supportsScale) 'Scale',
-                        ];
-                        return ListTile(
-                          leading: const Icon(Icons.bluetooth),
-                          title: Text(device.name),
-                          subtitle: Text(
-                            '${device.address} • ${device.source}${capabilities.isEmpty ? '' : ' • ${capabilities.join(' / ')}'}',
-                          ),
-                          trailing: capabilities.isEmpty
-                              ? null
-                              : PopupMenuButton<String>(
-                                  onSelected: (value) {
-                                    setState(() {
-                                      if (value == 'printer') {
-                                        _selectedPrinter = device;
-                                      } else {
-                                        _selectedScale = device;
-                                      }
-                                    });
-                                  },
-                                  itemBuilder: (_) => [
-                                    if (device.supportsPrinter)
-                                      const PopupMenuItem(
-                                        value: 'printer',
-                                        child: Text('Use as Printer'),
-                                      ),
-                                    if (device.supportsScale)
-                                      const PopupMenuItem(
-                                        value: 'scale',
-                                        child: Text('Use as Scale'),
-                                      ),
-                                  ],
-                                ),
-                        );
-                      },
+            if (_devices.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Text(
+                    'No paired Bluetooth devices found. Pair devices in phone settings then tap refresh.',
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              )
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _devices.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final device = _devices[index];
+                  final capabilities = <String>[
+                    if (device.supportsPrinter) 'Printer',
+                    if (device.supportsScale) 'Scale',
+                  ];
+                  return ListTile(
+                    leading: const Icon(Icons.bluetooth),
+                    title: Text(device.name),
+                    subtitle: Text(
+                      '${device.address} • ${device.source}${capabilities.isEmpty ? '' : ' • ${capabilities.join(' / ')}'}',
                     ),
-            ),
+                    trailing: capabilities.isEmpty
+                        ? null
+                        : PopupMenuButton<String>(
+                            onSelected: (value) {
+                              setState(() {
+                                if (value == 'printer') {
+                                  _selectedPrinter = device;
+                                } else {
+                                  _selectedScale = device;
+                                }
+                              });
+                            },
+                            itemBuilder: (_) => [
+                              if (device.supportsPrinter)
+                                const PopupMenuItem(
+                                  value: 'printer',
+                                  child: Text('Use as Printer'),
+                                ),
+                              if (device.supportsScale)
+                                const PopupMenuItem(
+                                  value: 'scale',
+                                  child: Text('Use as Scale'),
+                                ),
+                            ],
+                          ),
+                  );
+                },
+              ),
           ],
         ),
       ),

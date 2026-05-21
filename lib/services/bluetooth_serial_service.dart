@@ -40,10 +40,20 @@ class BluetoothSerialService {
       await disconnect();
     }
 
-    await _methodChannel.invokeMethod('connect', <String, dynamic>{
-      'address': address.trim(),
-    });
-    _connectedAddress = normalizedAddress;
+    try {
+      await _methodChannel.invokeMethod('connect', <String, dynamic>{
+        'address': address.trim(),
+      });
+      _connectedAddress = normalizedAddress;
+      return;
+    } on PlatformException catch (error) {
+      if (_isAlreadyConnectedError(error)) {
+        // Native layer reports an existing session; treat it as connected and reuse it.
+        _connectedAddress = normalizedAddress;
+        return;
+      }
+      rethrow;
+    }
   }
 
   Future<void> disconnect() async {
@@ -80,5 +90,10 @@ class BluetoothSerialService {
         .replaceAll(' ', '')
         .trim()
         .toUpperCase();
+  }
+
+  bool _isAlreadyConnectedError(PlatformException error) {
+    return error.code == 'connect_error' &&
+        (error.message?.toLowerCase().contains('already connected') ?? false);
   }
 }

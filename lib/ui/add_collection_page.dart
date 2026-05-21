@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -8,7 +9,7 @@ import '../data/daily_collection_model.dart';
 import '../data/daily_collection_repository.dart';
 import '../data/farmer_model.dart';
 import '../data/farmer_repository.dart';
-import 'brand_logo.dart';
+import '../services/bluetooth_printer_service.dart';
 import '../services/classic_scale_service.dart';
 import '../services/collection_settings_service.dart';
 
@@ -19,38 +20,197 @@ class AddCollectionPage extends StatefulWidget {
   State<AddCollectionPage> createState() => _AddCollectionPageState();
 }
 
+class _HeldLoad {
+  const _HeldLoad({required this.kg, required this.bags});
+
+  final double kg;
+  final int bags;
+}
+
 class _AddCollectionPageState extends State<AddCollectionPage> {
+  StreamSubscription<int?>? _btStateSub;
   static final _random = Random();
   final _formKey = GlobalKey<FormState>();
   final _kgController = TextEditingController();
   final _bagsController = TextEditingController();
   bool _isSaving = false;
   bool _isConnectingScale = false;
-  String _scaleStatus = 'Disconnected';
+  bool _isScaleConnected = false;
+  bool _isPrinterConnected = false;
+  bool _awaitingGrossResetAfterHold = false;
+  String _scaleStatus = 'Checking Classic Bluetooth...';
   StreamSubscription<double>? _weightSub;
+  Timer? _connectionMonitorTimer;
+  DateTime _lastScaleReconnectAttempt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPrinterReconnectAttempt = DateTime.fromMillisecondsSinceEpoch(
+    0,
+  );
   String _farmerNumber = '';
   String _farmerName = '';
   String _factory = '';
+  bool _useAutoCalculate = true;
+  static const double _tarePerBag = 0.5;
+  static const double _grossResetThresholdKg = 0.05;
+  static const Duration _reconnectInterval = Duration(seconds: 6);
+  final List<_HeldLoad> _heldLoads = [];
 
-  String _formatShortDate(DateTime value) {
-    final day = value.day.toString().padLeft(2, '0');
-    final month = value.month.toString().padLeft(2, '0');
-    final year = value.year.toString();
-    return '$day/$month/$year';
+  // Add a FocusNode for the Gross Weight field
+  final _grossWeightFocusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _bagsController.text = '0';
+    _startBluetoothConnectionMonitor();
+    unawaited(_initializeScale());
+
+    // Listen to native Bluetooth adapter/device events from the plugin state stream.
+    _btStateSub = BlueThermalPrinter.instance.onStateChanged().listen(
+      _onBluetoothStateChanged,
+      onError: (_) {},
+    );
+  }
+
+  void _onBluetoothStateChanged(int? state) {
+    if (!mounted) return;
+
+    switch (state) {
+      case BlueThermalPrinter.CONNECTED:
+        // ACL connected can happen outside the app; explicitly reconnect scale thread.
+        if (!_isConnectingScale) {
+          unawaited(_connectScale());
+        }
+        unawaited(_refreshPrinterStatus());
+        break;
+      case BlueThermalPrinter.DISCONNECTED:
+      case BlueThermalPrinter.DISCONNECT_REQUESTED:
+      case BlueThermalPrinter.STATE_ON:
+      case BlueThermalPrinter.STATE_OFF:
+      case BlueThermalPrinter.STATE_TURNING_ON:
+      case BlueThermalPrinter.STATE_TURNING_OFF:
+        unawaited(_monitorBluetoothConnections());
+        break;
+      default:
+        break;
+    }
+  }
+
+  void _startBluetoothConnectionMonitor() {
+    _connectionMonitorTimer?.cancel();
+    _connectionMonitorTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
+      unawaited(_monitorBluetoothConnections());
+    });
+  }
+
+  Future<void> _monitorBluetoothConnections() async {
+    await Future.wait<void>([_refreshPrinterStatus(), _refreshScaleStatus()]);
+
+    if (!mounted) return;
+
+    if (!_isScaleConnected &&
+        !_isConnectingScale &&
+        _canAttemptReconnect(_lastScaleReconnectAttempt)) {
+      _lastScaleReconnectAttempt = DateTime.now();
+      await _connectScale();
+    }
+
+    if (!_isPrinterConnected &&
+        _canAttemptReconnect(_lastPrinterReconnectAttempt)) {
+      _lastPrinterReconnectAttempt = DateTime.now();
+      await _reconnectAttachedPrinter();
+    }
+  }
+
+  bool _canAttemptReconnect(DateTime lastAttempt) {
+    return DateTime.now().difference(lastAttempt) >= _reconnectInterval;
+  }
+
+  Future<void> _initializeScale() async {
+    await _refreshPrinterStatus();
+    await _refreshScaleStatus();
+    await _connectScale();
+  }
+
+  Future<void> _refreshPrinterStatus() async {
+    bool connected = false;
+    try {
+      connected = (await BlueThermalPrinter.instance.isConnected) == true;
+    } catch (_) {
+      connected = false;
+    }
+    if (!mounted) return;
+    setState(() {
+      _isPrinterConnected = connected;
+    });
+  }
+
+  Future<void> _reconnectAttachedPrinter() async {
+    try {
+      final connected = await BluetoothPrinterService.instance
+          .connectAttachedPrinter();
+      if (connected) {
+        await _refreshPrinterStatus();
+      }
+    } catch (_) {
+      // Keep monitor resilient; next cycle will retry.
+    }
+  }
+
+  Future<void> _refreshScaleStatus() async {
+    bool connected = false;
+    try {
+      connected = await ClassicScaleService.instance.isConnected();
+    } catch (_) {
+      connected = false;
+    }
+
+    // If scale is connected but we are not listening yet, establish the stream once.
+    if (connected && _weightSub == null && !_isConnectingScale) {
+      await _connectScale();
+      return; // _connectScale will update state and status
+    }
+
+    if (!connected) {
+      await _weightSub?.cancel();
+      _weightSub = null;
+    }
+
+    if (!mounted) return;
+    final shouldUpdateStatusText =
+        !connected || (!_isConnectingScale && !_awaitingGrossResetAfterHold);
+    setState(() {
+      _isScaleConnected = connected;
+      if (!connected) {
+        _awaitingGrossResetAfterHold = false;
+      }
+      if (shouldUpdateStatusText) {
+        _scaleStatus = connected
+            ? 'Connected (Classic Bluetooth)'
+            : 'Disconnected (Classic Bluetooth)';
+      }
+    });
   }
 
   @override
   void dispose() {
+    _grossWeightFocusNode.dispose(); // Dispose the FocusNode
+    _connectionMonitorTimer?.cancel();
     _weightSub?.cancel();
+    _btStateSub?.cancel();
     _kgController.dispose();
     _bagsController.dispose();
     super.dispose();
   }
 
   Future<void> _connectScale() async {
+    if (_isConnectingScale) {
+      return;
+    }
+
     setState(() {
       _isConnectingScale = true;
-      _scaleStatus = 'Connecting...';
+      _scaleStatus = 'Connecting (Classic Bluetooth)...';
     });
 
     final connected = await ClassicScaleService.instance.connectToScale();
@@ -58,14 +218,30 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     await _weightSub?.cancel();
     if (connected) {
       _weightSub = ClassicScaleService.instance.weightStream.listen((weight) {
-        _kgController.text = weight.toStringAsFixed(2);
+        _handleLiveScaleWeight(weight);
       });
     }
 
     if (!mounted) return;
     setState(() {
       _isConnectingScale = false;
-      _scaleStatus = connected ? 'Connected' : 'Disconnected';
+      _isScaleConnected = connected;
+      _scaleStatus = connected
+          ? 'Connected (Classic Bluetooth)'
+          : 'Disconnected (Classic Bluetooth)';
+    });
+  }
+
+  Future<void> _disconnectScale() async {
+    await _weightSub?.cancel();
+    _weightSub = null;
+    await ClassicScaleService.instance.disconnect();
+    if (!mounted) return;
+    setState(() {
+      _isScaleConnected = false;
+      _isConnectingScale = false;
+      _awaitingGrossResetAfterHold = false;
+      _scaleStatus = 'Disconnected (Classic Bluetooth)';
     });
   }
 
@@ -82,9 +258,9 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     final no = now.millisecondsSinceEpoch;
     final uniqueSuffix = _random.nextInt(1000000).toString().padLeft(6, '0');
     final kg = double.tryParse(_kgController.text.trim());
-    final noOfBags = int.tryParse(_bagsController.text.trim());
+    final noOfBags = _currentAutoBags();
     final settings = await CollectionSettingsService.instance.load();
-    final tare = noOfBags == null ? null : settings.tareWeight * noOfBags;
+    final tare = settings.tareWeight * noOfBags;
 
     final collection = DailyCollection(
       farmersNumber: _farmerNumber.trim(),
@@ -120,364 +296,1140 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     setState(() {
       _isSaving = false;
     });
+  }
 
-    Navigator.of(context).pop(true);
+  int _bagsFromWeight(double kg) {
+    if (kg <= 0) return 0;
+    return (kg / 90).round();
+  }
+
+  int _currentAutoBags() {
+    final kg = double.tryParse(_kgController.text.trim()) ?? 0;
+    return _bagsFromWeight(kg);
+  }
+
+  void _updateAutoBags() {
+    final bags = _currentAutoBags().toString();
+    if (_bagsController.text != bags) {
+      _bagsController.text = bags;
+    }
+  }
+
+  bool _isGrossReset(double kg) => kg.abs() <= _grossResetThresholdKg;
+
+  void _handleLiveScaleWeight(double weight) {
+    final nextValue = weight.toStringAsFixed(2);
+    if (_kgController.text != nextValue) {
+      _kgController.text = nextValue;
+      _kgController.selection = TextSelection.collapsed(
+        offset: nextValue.length,
+      );
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _updateAutoBags();
+      if (_awaitingGrossResetAfterHold && _isGrossReset(weight)) {
+        _awaitingGrossResetAfterHold = false;
+        _scaleStatus = 'Connected (Classic Bluetooth)';
+      }
+    });
+  }
+
+  void _addHeldLoad() {
+    if (_awaitingGrossResetAfterHold) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Wait for Gross Weight to reset to 0.00 kg before next Hold.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final kg = double.tryParse(_kgController.text.trim()) ?? 0;
+    final bags = _currentAutoBags();
+    if (kg <= 0 && bags <= 0) return;
+
+    setState(() {
+      _heldLoads.add(_HeldLoad(kg: kg, bags: bags));
+      _kgController.text = '0.00';
+      _bagsController.clear();
+      _updateAutoBags();
+      if (_isScaleConnected) {
+        _awaitingGrossResetAfterHold = true;
+        _scaleStatus =
+            'Hold captured. Waiting for Gross Weight to reset to 0.00 kg...';
+      }
+    });
+  }
+
+  void _removeHeldLoad(int index) {
+    setState(() {
+      _heldLoads.removeAt(index);
+    });
+  }
+
+  double _heldGrossTotal() {
+    return _heldLoads.fold(0, (sum, item) => sum + item.kg);
+  }
+
+  int _heldBagsTotal() {
+    return _heldLoads.fold(0, (sum, item) => sum + item.bags);
+  }
+
+  double _calculateGrossTotal() {
+    final kg = double.tryParse(_kgController.text) ?? 0;
+    return kg + _heldGrossTotal();
+  }
+
+  double _calculateTare() {
+    final currentBags = _currentAutoBags();
+    final totalBags = currentBags + _heldBagsTotal();
+    return totalBags * _tarePerBag;
+  }
+
+  double _calculateNetCollected() {
+    return _calculateGrossTotal() - _calculateTare();
+  }
+
+  DateTime _collectionTimestamp(DailyCollection item) {
+    return item.collectionTime ?? item.collectionsDate;
+  }
+
+  bool _isSameDate(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  String _reversalKeyFor(DailyCollection collection) {
+    final collectionNumber = collection.collectionNumber.trim();
+    return collectionNumber.isEmpty
+        ? collection.no.toString()
+        : collectionNumber;
+  }
+
+  String _reversalCommentFor(DailyCollection collection) {
+    return 'Reversal of ${_reversalKeyFor(collection)}';
+  }
+
+  bool _isReversalEntry(DailyCollection collection) {
+    final collectType = collection.collectType.trim().toLowerCase();
+    final comments = collection.comments.trim().toLowerCase();
+    return collectType == 'reversal' || comments.startsWith('reversal of ');
+  }
+
+  bool _hasReversalFor(
+    DailyCollection original,
+    List<DailyCollection> allCollections,
+  ) {
+    final expectedComment = _reversalCommentFor(original).toLowerCase();
+    return allCollections.any(
+      (entry) =>
+          entry.no != original.no &&
+          entry.comments.trim().toLowerCase() == expectedComment,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
+    final isKeyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
     final farmers = context.watch<FarmerRepository>().farmers;
     final collections = context.watch<DailyCollectionRepository>().items;
-    final filteredCollections = collections
-        .where((item) => item.farmersNumber == _farmerNumber.trim())
-        .toList();
-    final latestCollection = filteredCollections.isEmpty
-        ? null
-        : ([...filteredCollections]
-              ..sort(
-                (a, b) => (b.collectionTime ?? b.collectionsDate).compareTo(
-                  a.collectionTime ?? a.collectionsDate,
-                ),
-              ))
-            .first;
+    final now = DateTime.now();
+    final todayCollections =
+        collections
+            .where((item) => _isSameDate(_collectionTimestamp(item), now))
+            .toList()
+          ..sort(
+            (a, b) =>
+                _collectionTimestamp(b).compareTo(_collectionTimestamp(a)),
+          );
+    final totalTodayKg = todayCollections.fold<double>(
+      0,
+      (sum, item) => sum + (item.kgCollected ?? 0),
+    );
+
+    final grossTotal = _calculateGrossTotal();
+    _updateAutoBags();
+    final totalTare = _calculateTare();
+    final netCollected = _calculateNetCollected();
 
     return Scaffold(
       appBar: AppBar(
-        title: const BrandedAppBarTitle('Add Collection'),
+        backgroundColor: colors.surface,
+        elevation: 0,
         automaticallyImplyLeading: false,
         leading: IconButton(
           tooltip: 'Back',
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(),
         ),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Center(
+              child: Text(
+                'Total: ${totalTodayKg.toStringAsFixed(2)} kg',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ),
+          _buildConnectionBadge(
+            label: 'Printer',
+            connected: _isPrinterConnected,
+            checking: false,
+          ),
+          const SizedBox(width: 8),
+          _buildConnectionBadge(
+            label: 'Scale',
+            connected: _isScaleConnected,
+            checking: _isConnectingScale,
+          ),
+          const SizedBox(width: 12),
+        ],
       ),
       body: SafeArea(
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
-            children: [
-              Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  side: BorderSide(color: colors.outlineVariant),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Farmer',
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
+        child: Column(
+          children: [
+            Expanded(
+              child: Form(
+                key: _formKey,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(2, 2, 2, 2),
+                  children: [
+                    // Farmer Search Card
+                    Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(5),
+                        side: BorderSide(color: colors.outlineVariant),
                       ),
-                      const SizedBox(height: 12),
-                      Autocomplete<Farmer>(
-                        optionsBuilder: (textEditingValue) {
-                          final query = textEditingValue.text.trim().toLowerCase();
-                          if (query.isEmpty) {
-                            return const Iterable<Farmer>.empty();
-                          }
-                          return farmers.where((farmer) {
-                            return farmer.no.toLowerCase().contains(query) ||
-                                farmer.name.toLowerCase().contains(query);
-                          });
-                        },
-                        displayStringForOption: (farmer) => farmer.no,
-                        onSelected: (farmer) {
-                          setState(() {
-                            _farmerNumber = farmer.no;
-                            _farmerName = farmer.name;
-                            _factory = farmer.factory;
-                          });
-                        },
-                        fieldViewBuilder:
-                            (
-                              context,
-                              textEditingController,
-                              focusNode,
-                              onFieldSubmitted,
-                            ) {
-                              if (_farmerNumber.isNotEmpty &&
-                                  textEditingController.text != _farmerNumber) {
-                                textEditingController.text = _farmerNumber;
-                              }
-                              return TextFormField(
-                                controller: textEditingController,
-                                focusNode: focusNode,
-                                onChanged: (value) {
-                                  setState(() {
-                                    _farmerNumber = value;
-                                  });
-                                },
-                                decoration: const InputDecoration(
-                                  labelText: 'Farmer Number',
-                                  hintText: 'Search by farmer number or name',
-                                  prefixIcon: Icon(Icons.search),
-                                ),
-                                validator: (value) {
-                                  if (value == null || value.trim().isEmpty) {
-                                    return 'Enter farmer number';
-                                  }
-                                  return null;
-                                },
-                              );
-                            },
-                        optionsViewBuilder: (context, onSelected, options) {
-                          return Align(
-                            alignment: Alignment.topLeft,
-                            child: Material(
-                              elevation: 4,
-                              borderRadius: BorderRadius.circular(16),
-                              child: SizedBox(
-                                width: MediaQuery.of(context).size.width - 32,
-                                child: ListView.separated(
-                                  padding: const EdgeInsets.symmetric(vertical: 8),
-                                  shrinkWrap: true,
-                                  itemCount: options.length,
-                                  separatorBuilder: (_, __) => const Divider(height: 1),
-                                  itemBuilder: (context, index) {
-                                    final farmer = options.elementAt(index);
-                                    return ListTile(
-                                      title: Text(farmer.no),
-                                      subtitle: Text(farmer.name),
-                                      trailing: farmer.factory.trim().isEmpty
-                                          ? null
-                                          : Text(farmer.factory),
-                                      onTap: () => onSelected(farmer),
-                                    );
-                                  },
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                      if (_farmerName.trim().isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: colors.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _farmerName,
-                                style: theme.textTheme.titleSmall?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              if (_factory.trim().isNotEmpty) ...[
-                                const SizedBox(height: 4),
-                                Text('Factory: $_factory'),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  side: BorderSide(color: colors.outlineVariant),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Weight & Bags',
-                              style: theme.textTheme.titleSmall?.copyWith(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: _scaleStatus == 'Connected'
-                                  ? colors.tertiaryContainer
-                                  : colors.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Text(
-                              _scaleStatus,
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      FilledButton.icon(
-                        onPressed: _isConnectingScale ? null : _connectScale,
-                        icon: const Icon(Icons.bluetooth_connected),
-                        label: Text(
-                          _isConnectingScale ? 'Connecting Scale...' : 'Connect Scale',
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            flex: 2,
-                            child: TextFormField(
-                              controller: _kgController,
-                              decoration: const InputDecoration(
-                                labelText: 'Kg Collected',
-                                hintText: '0.00',
-                              ),
-                              keyboardType: const TextInputType.numberWithOptions(
-                                decimal: true,
-                              ),
-                              validator: (value) {
-                                if (value == null || value.trim().isEmpty) {
-                                  return 'Enter collected kg';
-                                }
-                                if (double.tryParse(value) == null) {
-                                  return 'Enter a valid number';
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _bagsController,
-                              decoration: const InputDecoration(
-                                labelText: 'No of Bags',
-                                hintText: '0',
-                              ),
-                              keyboardType: TextInputType.number,
-                              validator: (value) {
-                                final trimmed = value?.trim() ?? '';
-                                if (trimmed.isEmpty) {
-                                  return 'Enter bags';
-                                }
-                                final parsed = int.tryParse(trimmed);
-                                if (parsed == null) {
-                                  return 'Whole number only';
-                                }
-                                if (parsed < 0) {
-                                  return 'Cannot be negative';
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              if (_farmerNumber.trim().isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Card(
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
-                    side: BorderSide(color: colors.outlineVariant),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Previous deliveries',
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        if (latestCollection != null)
-                          Text(
-                            'Latest: ${latestCollection.kgCollected ?? 0} kg on ${_formatShortDate(latestCollection.collectionTime ?? latestCollection.collectionsDate)}',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colors.onSurfaceVariant,
-                            ),
-                          ),
-                        const SizedBox(height: 12),
-                        if (filteredCollections.isEmpty)
-                          const Text('No deliveries recorded yet.')
-                        else
-                          ListView.separated(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: filteredCollections.length,
-                            separatorBuilder: (_, __) => const Divider(height: 16),
-                            itemBuilder: (context, index) {
-                              final item = filteredCollections[index];
-                              final timestamp = item.collectionTime ?? item.collectionsDate;
-                              return ListTile(
-                                contentPadding: EdgeInsets.zero,
-                                leading: Container(
-                                  width: 40,
-                                  height: 40,
-                                  decoration: BoxDecoration(
-                                    color: colors.secondaryContainer,
-                                    borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Autocomplete<Farmer>(
+                                    optionsBuilder: (textEditingValue) {
+                                      final query = textEditingValue.text
+                                          .trim()
+                                          .toLowerCase();
+                                      if (query.isEmpty) {
+                                        return const Iterable<Farmer>.empty();
+                                      }
+                                      return farmers.where((farmer) {
+                                        return farmer.no.toLowerCase().contains(
+                                              query,
+                                            ) ||
+                                            farmer.name.toLowerCase().contains(
+                                              query,
+                                            );
+                                      });
+                                    },
+                                    displayStringForOption: (farmer) =>
+                                        farmer.no,
+                                    onSelected: (farmer) {
+                                      setState(() {
+                                        _farmerNumber = farmer.no;
+                                        _farmerName = farmer.name;
+                                        _factory = farmer.factory;
+                                      });
+                                      // Move focus to the Gross Weight field
+                                      _grossWeightFocusNode.requestFocus();
+                                    },
+                                    fieldViewBuilder:
+                                        (
+                                          context,
+                                          textEditingController,
+                                          focusNode,
+                                          onFieldSubmitted,
+                                        ) {
+                                          if (_farmerNumber.isNotEmpty &&
+                                              textEditingController.text !=
+                                                  _farmerNumber) {
+                                            textEditingController.text =
+                                                _farmerNumber;
+                                          }
+                                          return TextFormField(
+                                            controller: textEditingController,
+                                            focusNode: focusNode,
+                                            autofocus: true,
+                                            onChanged: (value) {
+                                              setState(() {
+                                                _farmerNumber = value;
+                                              });
+                                            },
+                                            decoration: const InputDecoration(
+                                              labelText: 'Farmer Number',
+                                              prefixIcon: Icon(Icons.search),
+                                              border: InputBorder.none,
+                                            ),
+                                            validator: (value) {
+                                              if (value == null ||
+                                                  value.trim().isEmpty) {
+                                                return 'Enter farmer number';
+                                              }
+                                              return null;
+                                            },
+                                          );
+                                        },
+                                    optionsViewBuilder:
+                                        (context, onSelected, options) {
+                                          return Align(
+                                            alignment: Alignment.topLeft,
+                                            child: Material(
+                                              elevation: 4,
+                                              borderRadius:
+                                                  BorderRadius.circular(16),
+                                              child: SizedBox(
+                                                width:
+                                                    MediaQuery.of(
+                                                      context,
+                                                    ).size.width -
+                                                    32,
+                                                child: ListView.separated(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        vertical: 8,
+                                                      ),
+                                                  shrinkWrap: true,
+                                                  itemCount: options.length,
+                                                  separatorBuilder: (_, __) =>
+                                                      const Divider(height: 1),
+                                                  itemBuilder:
+                                                      (context, index) {
+                                                        final farmer = options
+                                                            .elementAt(index);
+                                                        return ListTile(
+                                                          title: Text(
+                                                            farmer.no,
+                                                          ),
+                                                          subtitle: Text(
+                                                            farmer.name,
+                                                          ),
+                                                          onTap: () =>
+                                                              onSelected(
+                                                                farmer,
+                                                              ),
+                                                        );
+                                                      },
+                                                ),
+                                              ),
+                                            ),
+                                          );
+                                        },
                                   ),
-                                  alignment: Alignment.center,
-                                  child: const Icon(Icons.scale_outlined),
                                 ),
-                                title: Text(
-                                  '${item.kgCollected ?? 0} kg • ${item.noOfBags ?? 0} bags',
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Container(
+                                    alignment: Alignment.centerLeft,
+                                    padding: const EdgeInsets.all(8),
+                                    child: Text(
+                                      _farmerName.isEmpty
+                                          ? 'Farmer name'
+                                          : _farmerName,
+                                      style: theme.textTheme.bodyMedium
+                                          ?.copyWith(
+                                            color: _farmerName.isEmpty
+                                                ? colors.onSurfaceVariant
+                                                : colors.onSurface,
+                                          ),
+                                    ),
+                                  ),
                                 ),
-                                subtitle: Text(
-                                  '${_formatShortDate(timestamp)} • ${item.collectionNumber}',
-                                ),
-                              );
-                            },
-                          ),
-                      ],
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
+                    const SizedBox(height: 2),
+                    // Weight & Bags Card
+                    Card(
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(5),
+                        side: BorderSide(color: colors.outlineVariant),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(2),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Weight & Bags',
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Text(
+                                  'Tare setting: 0.50 kg/bag',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: colors.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+
+                            const SizedBox(height: 5),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                SizedBox(
+                                  width: 100,
+                                  child: FilledButton.icon(
+                                    onPressed: _awaitingGrossResetAfterHold
+                                        ? null
+                                        : _addHeldLoad,
+                                    icon: const Icon(
+                                      Icons.pause_circle_outlined,
+                                    ),
+                                    label: const Text('Hold'),
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor:
+                                          colors.surfaceContainerHighest,
+                                      foregroundColor: colors.onSurface,
+                                      minimumSize: const Size(150, 48),
+                                    ),
+                                  ),
+                                ),
+                                if (_heldLoads.isNotEmpty) ...[
+                                  const SizedBox(width: 7),
+                                  Expanded(
+                                    flex: 1,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(6),
+                                      decoration: BoxDecoration(
+                                        color: colors.surfaceContainer,
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          const SizedBox(height: 4),
+                                          ..._heldLoads.asMap().entries.map((
+                                            entry,
+                                          ) {
+                                            final idx = entry.key;
+                                            final load = entry.value;
+                                            return Align(
+                                              alignment: Alignment.center,
+                                              child: FractionallySizedBox(
+                                                widthFactor: 0.9,
+                                                child: Container(
+                                                  margin: const EdgeInsets.only(
+                                                    bottom: 4,
+                                                  ),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 6,
+                                                      ),
+                                                  decoration: BoxDecoration(
+                                                    color: colors.surface,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          12,
+                                                        ),
+                                                    border: Border.all(
+                                                      color:
+                                                          colors.outlineVariant,
+                                                    ),
+                                                  ),
+                                                  child: Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: Text(
+                                                          '${idx + 1}: ${load.kg.toStringAsFixed(2)} kg, ${load.bags} bags',
+                                                          style: theme
+                                                              .textTheme
+                                                              .bodyMedium
+                                                              ?.copyWith(
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                                fontSize: 11,
+                                                              ),
+                                                        ),
+                                                      ),
+                                                      InkWell(
+                                                        onTap: () =>
+                                                            _removeHeldLoad(
+                                                              idx,
+                                                            ),
+                                                        child: const Padding(
+                                                          padding:
+                                                              EdgeInsets.all(2),
+                                                          child: Icon(
+                                                            Icons.close,
+                                                            size: 16,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            );
+                                          }),
+                                          Text(
+                                            'Held total: ${_heldGrossTotal().toStringAsFixed(2)} kg, ${_heldBagsTotal()} bags',
+                                            style: theme.textTheme.titleSmall
+                                                ?.copyWith(
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 12,
+                                                ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            if (_awaitingGrossResetAfterHold)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 6),
+                                child: Text(
+                                  'Reset scale Gross Weight to 0.00 kg to enable next Hold.',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: colors.onSurfaceVariant,
+                                  ),
+                                ),
+                              ),
+                            const SizedBox(height: 16),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Gross Weight',
+                                        style: theme.textTheme.bodySmall,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Container(
+                                        alignment: Alignment.center,
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 12,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          border: Border(
+                                            bottom: BorderSide(
+                                              color: colors.outline,
+                                            ),
+                                          ),
+                                        ),
+                                        child: TextFormField(
+                                          controller: _kgController,
+                                          focusNode:
+                                              _grossWeightFocusNode, // Attach the FocusNode here
+                                          textAlign: TextAlign.center,
+                                          decoration: const InputDecoration(
+                                            border: InputBorder.none,
+                                            hintText: '0',
+                                          ),
+                                          keyboardType:
+                                              const TextInputType.numberWithOptions(
+                                                decimal: true,
+                                              ),
+                                          validator: (value) {
+                                            if (value == null ||
+                                                value.trim().isEmpty) {
+                                              return 'Enter kg';
+                                            }
+                                            if (double.tryParse(value) ==
+                                                null) {
+                                              return 'Valid number';
+                                            }
+                                            return null;
+                                          },
+                                          onChanged: (_) {
+                                            setState(() {});
+                                          },
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Text(
+                                            'No of Bags',
+                                            style: theme.textTheme.bodySmall,
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Container(
+                                        alignment: Alignment.center,
+                                        padding: const EdgeInsets.symmetric(
+                                          vertical: 12,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          border: Border(
+                                            bottom: BorderSide(
+                                              color: colors.outline,
+                                            ),
+                                          ),
+                                        ),
+                                        child: TextFormField(
+                                          controller: _bagsController,
+                                          textAlign: TextAlign.center,
+                                          decoration: const InputDecoration(
+                                            border: InputBorder.none,
+                                            hintText: '0',
+                                          ),
+                                          readOnly: true,
+                                          keyboardType: TextInputType.number,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _buildInfoBox(
+                                    context,
+                                    'Gross total',
+                                    '${grossTotal.toStringAsFixed(2)} kg',
+                                    colors,
+                                    theme.textTheme,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: _buildInfoBox(
+                                    context,
+                                    'Total tare',
+                                    '${totalTare.toStringAsFixed(2)} kg',
+                                    colors,
+                                    theme.textTheme,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: _buildInfoBox(
+                                    context,
+                                    'Net collected',
+                                    '${netCollected.toStringAsFixed(2)} kg',
+                                    colors,
+                                    theme.textTheme,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (!isKeyboardVisible)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  decoration: BoxDecoration(
+                    color: colors.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: colors.outlineVariant),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Today\'s collections',
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            'Total: ${totalTodayKg.toStringAsFixed(2)} kg',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        height: 140,
+                        child: todayCollections.isEmpty
+                            ? Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  'No collections recorded today.',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: colors.onSurfaceVariant,
+                                  ),
+                                ),
+                              )
+                            : ListView.separated(
+                                itemCount: todayCollections.length,
+                                separatorBuilder: (_, __) =>
+                                    const Divider(height: 10),
+                                itemBuilder: (context, index) {
+                                  final item = todayCollections[index];
+                                  final farmerNumber = item.farmersNumber
+                                      .trim();
+                                  final farmerName = item.farmersName.trim();
+                                  final summary =
+                                      '${(item.kgCollected ?? 0).toStringAsFixed(2)} kg • ${item.noOfBags ?? 0} bags';
+                                  final hasExistingReversal = _hasReversalFor(
+                                    item,
+                                    collections,
+                                  );
+                                  final canReverse =
+                                      !_isReversalEntry(item) &&
+                                      !hasExistingReversal &&
+                                      ((item.kgCollected ?? 0) > 0 ||
+                                          (item.gross ?? 0) > 0 ||
+                                          (item.tare ?? 0) > 0);
+                                  return Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              farmerNumber,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: theme.textTheme.bodySmall
+                                                  ?.copyWith(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                            ),
+                                            Text(
+                                              farmerName.isEmpty
+                                                  ? 'No name'
+                                                  : farmerName,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: theme.textTheme.bodySmall
+                                                  ?.copyWith(
+                                                    fontSize: 11,
+                                                    color:
+                                                        colors.onSurfaceVariant,
+                                                  ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        summary,
+                                        style: theme.textTheme.bodySmall,
+                                      ),
+                                      IconButton(
+                                        tooltip: 'Reprint receipt',
+                                        onPressed: _isSaving
+                                            ? null
+                                            : () => _reprintCollection(item),
+                                        icon: const Icon(
+                                          Icons.print_outlined,
+                                          size: 18,
+                                        ),
+                                      ),
+                                      IconButton(
+                                        tooltip: canReverse
+                                            ? 'Reverse entry'
+                                            : (hasExistingReversal
+                                                  ? 'Already reversed'
+                                                  : 'Not reversible'),
+                                        onPressed: _isSaving || !canReverse
+                                            ? null
+                                            : () => _confirmReverseCollection(
+                                                item,
+                                              ),
+                                        icon: Icon(
+                                          Icons.undo,
+                                          size: 18,
+                                          color: canReverse
+                                              ? Colors.red.shade700
+                                              : colors.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: _isSaving ? null : _save,
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: FilledButton.icon(
+                onPressed: _isSaving ? null : _printReceipt,
                 icon: _isSaving
                     ? const SizedBox(
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
-                    : const Icon(Icons.save_outlined),
-                label: Text(_isSaving ? 'Saving...' : 'Save Collection'),
+                    : const Icon(Icons.print_outlined),
+                label: Text(
+                  _isSaving
+                      ? 'Printing...'
+                      : 'Print ${netCollected.toStringAsFixed(2)} kg',
+                ),
                 style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF5D4037),
                   padding: const EdgeInsets.symmetric(vertical: 16),
+                  minimumSize: const Size(double.infinity, 56),
                 ),
               ),
-            ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _printReceipt() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    if (_calculateNetCollected() < 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Net collected is negative. Adjust weight or bags before printing.',
           ),
         ),
+      );
+      return;
+    }
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      // First save the collection
+      final repository = context.read<DailyCollectionRepository>();
+      final now = DateTime.now();
+      final no = now.millisecondsSinceEpoch;
+      final uniqueSuffix = _random.nextInt(1000000).toString().padLeft(6, '0');
+      final kg = double.tryParse(_kgController.text.trim());
+      final noOfBags = _currentAutoBags();
+      final settings = await CollectionSettingsService.instance.load();
+      final tare = settings.tareWeight * noOfBags;
+
+      final collection = DailyCollection(
+        farmersNumber: _farmerNumber.trim(),
+        collectionsDate: now,
+        collectionNumber: 'COL-$no-$uniqueSuffix',
+        coffeeType: '',
+        no: no,
+        farmersName: _farmerName,
+        kgCollected: kg,
+        cancelled: 'N',
+        paid: 0,
+        idNumber: '',
+        factory: _factory,
+        sent: false,
+        comments: '',
+        cumm: null,
+        userName: 'local',
+        can: '',
+        collectionTime: now,
+        collectType: 'Manual',
+        crop: '',
+        gross: null,
+        tare: tare,
+        noOfBags: noOfBags,
+        deliveredBy: '',
+        coffeTypeName: '',
+        updated: false,
+      );
+
+      await repository.addCollection(collection);
+
+      // Then print the receipt
+      await _printToThermalPrinter(collection);
+
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _farmerNumber = '';
+        _farmerName = '';
+        _factory = '';
+        _kgController.text = '0.00';
+        _bagsController.text = '0';
+        _heldLoads.clear();
+        _awaitingGrossResetAfterHold = false;
+        if (_isScaleConnected) {
+          _scaleStatus = 'Connected (Classic Bluetooth)';
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Printed successfully. Ready for next farmer.'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Print error: $e')));
+    }
+  }
+
+  Future<void> _printToThermalPrinter(DailyCollection collection) async {
+    // Use the shared dashboard printer flow to keep receipt format identical.
+    bool connected = await BluetoothPrinterService.instance.isConnected();
+    if (!connected) {
+      connected = await BluetoothPrinterService.instance
+          .connectAttachedPrinter();
+      if (mounted) {
+        setState(() => _isPrinterConnected = connected);
+      }
+    }
+    if (!connected) {
+      throw 'Printer not connected. Attach and connect a printer in Settings.';
+    }
+
+    await BluetoothPrinterService.instance.printReceipt(collection);
+  }
+
+  Future<void> _reprintCollection(DailyCollection collection) async {
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      await _printToThermalPrinter(collection);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Reprinted receipt for ${collection.farmersName.trim().isEmpty ? collection.farmersNumber : collection.farmersName}.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Reprint failed: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _confirmReverseCollection(DailyCollection original) async {
+    final farmerLabel = original.farmersName.trim().isEmpty
+        ? original.farmersNumber
+        : original.farmersName;
+    final shouldReverse = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Reverse collection?'),
+          content: Text(
+            'Create a reversing entry for $farmerLabel with negative kg, gross, and tare?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Reverse'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldReverse != true) {
+      return;
+    }
+
+    await _reverseCollection(original);
+  }
+
+  Future<void> _reverseCollection(DailyCollection original) async {
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      final repository = context.read<DailyCollectionRepository>();
+      if (_isReversalEntry(original) ||
+          _hasReversalFor(original, repository.items)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('This transaction has already been reversed.'),
+            ),
+          );
+        }
+        return;
+      }
+
+      final now = DateTime.now();
+      final no = now.millisecondsSinceEpoch;
+      final uniqueSuffix = _random.nextInt(1000000).toString().padLeft(6, '0');
+      final reversedKg = -(original.kgCollected ?? 0);
+      final reversedGross = -(original.gross ?? original.kgCollected ?? 0);
+      final reversedTare = -(original.tare ?? 0);
+      final reversedBags = original.noOfBags == null
+          ? null
+          : -original.noOfBags!;
+
+      final reversal = DailyCollection(
+        farmersNumber: original.farmersNumber,
+        collectionsDate: now,
+        collectionNumber: 'REV-$no-$uniqueSuffix',
+        coffeeType: original.coffeeType,
+        no: no,
+        farmersName: original.farmersName,
+        kgCollected: reversedKg,
+        cancelled: original.cancelled,
+        paid: original.paid,
+        idNumber: original.idNumber,
+        factory: original.factory,
+        sent: false,
+        comments: _reversalCommentFor(original),
+        cumm: original.cumm,
+        userName: original.userName,
+        can: original.can,
+        collectionTime: now,
+        collectType: 'Reversal',
+        crop: original.crop,
+        gross: reversedGross,
+        tare: reversedTare,
+        noOfBags: reversedBags,
+        deliveredBy: original.deliveredBy,
+        coffeTypeName: original.coffeTypeName,
+        updated: false,
+      );
+
+      await repository.addCollection(reversal);
+
+      if (!mounted) return;
+      final farmerLabel = original.farmersName.trim().isEmpty
+          ? original.farmersNumber
+          : original.farmersName;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Reversed entry created for $farmerLabel.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Reverse failed: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
+  Widget _buildInfoBox(
+    BuildContext context,
+    String label,
+    String value,
+    ColorScheme colors,
+    TextTheme theme,
+  ) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: theme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: theme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConnectionBadge({
+    required String label,
+    required bool connected,
+    required bool checking,
+  }) {
+    final stateText = checking
+        ? 'Checking'
+        : (connected ? 'Connected' : 'Disconnected');
+    final stateColor = checking
+        ? Colors.amber.shade700
+        : (connected ? Colors.green.shade700 : Colors.red.shade700);
+    final iconData = label == 'Printer' ? Icons.print : Icons.scale;
+
+    return Tooltip(
+      message: '$label: $stateText',
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: stateColor.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: stateColor.withValues(alpha: 0.35)),
+        ),
+        child: Icon(iconData, size: 16, color: stateColor),
       ),
     );
   }

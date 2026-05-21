@@ -25,6 +25,7 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
   final _formKey = GlobalKey<FormState>();
   final _variantController = TextEditingController();
   final _quantityController = TextEditingController();
+  final _quantityFocusNode = FocusNode();
   final _amountController = TextEditingController();
   final _statusController = TextEditingController(text: 'Open');
   final _stockController = TextEditingController();
@@ -35,10 +36,35 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
 
   bool _saving = false;
 
+  Item? get _selectedItem {
+    return _items.where((item) => item.no == _selectedItemNo).firstOrNull;
+  }
+
   @override
   void initState() {
     super.initState();
     _loadItems();
+    _quantityController.addListener(_updateAmount);
+  }
+
+  void _updateAmount() {
+    final quantity = _toDouble(_quantityController.text) ?? 0;
+    final unitPrice = _selectedItem?.unitPrice ?? 0;
+    final amount = quantity * unitPrice;
+    _amountController.text = amount.toStringAsFixed(2);
+  }
+
+  void _prepareQuantityForSelectedItem() {
+    _quantityController.text = '1';
+    _updateAmount();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _quantityFocusNode.requestFocus();
+      _quantityController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _quantityController.text.length,
+      );
+    });
   }
 
   Future<void> _loadItems() async {
@@ -50,15 +76,16 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
       _items = loaded;
       if (_selectedItemNo == null && loaded.isNotEmpty) {
         _selectedItemNo = loaded.first.no;
-        _amountController.text = (loaded.first.unitPrice ?? 0).toStringAsFixed(2);
       }
     });
+    _updateAmount();
   }
 
   @override
   void dispose() {
     _variantController.dispose();
     _quantityController.dispose();
+    _quantityFocusNode.dispose();
     _amountController.dispose();
     _statusController.dispose();
     _stockController.dispose();
@@ -83,11 +110,15 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
     final quantity = _toDouble(_quantityController.text) ?? 0;
     final amount = _toDouble(_amountController.text) ?? 0;
     final now = DateTime.now();
+    final selectedItem = _items
+        .where((item) => item.no == _selectedItemNo)
+        .firstOrNull;
 
     final line = Store(
       entry: widget.entry,
       client: widget.client,
       item: _selectedItemNo ?? '',
+      itemDescription: selectedItem?.description ?? '',
       variant: _variantController.text.trim(),
       amount: amount,
       quantity: quantity,
@@ -98,7 +129,7 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
       factory: widget.factory,
       sent: false,
       comments: _commentsController.text.trim(),
-      lineTotal: quantity * amount,
+      lineTotal: amount,
       stock: _stockController.text.trim(),
       crop: _cropController.text.trim(),
       balance: null,
@@ -149,11 +180,8 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
                 onChanged: (value) {
                   setState(() {
                     _selectedItemNo = value;
-                    final selected = _items.where((x) => x.no == value).firstOrNull;
-                    if (selected != null && (_amountController.text.trim().isEmpty || _amountController.text.trim() == '0')) {
-                      _amountController.text = (selected.unitPrice ?? 0).toStringAsFixed(2);
-                    }
                   });
+                  _prepareQuantityForSelectedItem();
                 },
                 decoration: const InputDecoration(labelText: 'Item'),
                 validator: (value) {
@@ -166,6 +194,16 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
                   return null;
                 },
               ),
+              if (_selectedItem != null) ...[
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Unit Price: ${(_selectedItem!.unitPrice ?? 0).toStringAsFixed(2)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               TextFormField(
                 controller: _variantController,
@@ -174,7 +212,10 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
               const SizedBox(height: 12),
               TextFormField(
                 controller: _quantityController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                focusNode: _quantityFocusNode,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
                 decoration: const InputDecoration(labelText: 'Quantity'),
                 validator: (value) {
                   final number = _toDouble(value ?? '');
@@ -182,15 +223,21 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
                   if (number <= 0) return 'Quantity must be greater than 0';
                   return null;
                 },
+                onChanged: (_) => _updateAmount(),
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _amountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Amount'),
+                readOnly: true,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(
+                  labelText: 'Amount (Qty x Unit Price)',
+                ),
                 validator: (value) {
                   final number = _toDouble(value ?? '');
-                  if (number == null) return 'Enter amount';
+                  if (number == null) return 'Amount is required';
                   if (number < 0) return 'Amount cannot be negative';
                   return null;
                 },
@@ -211,11 +258,24 @@ class _AddStoreLinePageState extends State<AddStoreLinePage> {
                 decoration: const InputDecoration(labelText: 'Crop'),
               ),
               const SizedBox(height: 12),
-              TextFormField(
-                controller: _commentsController,
-                decoration: const InputDecoration(labelText: 'Comments'),
-                minLines: 2,
-                maxLines: 4,
+              Row(
+                children: [
+                  const Text(
+                    'Total:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _amountController,
+                      readOnly: true,
+                      decoration: const InputDecoration(
+                        border: InputBorder.none,
+                      ),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 24),
               FilledButton(

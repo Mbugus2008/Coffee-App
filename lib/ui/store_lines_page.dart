@@ -101,9 +101,9 @@ class _StoreLinesPageState extends State<StoreLinesPage> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        const Text('Line Total'),
+                        const Text('Amount'),
                         Text(
-                          (line.lineTotal ?? 0).toStringAsFixed(2),
+                          (line.amount ?? 0).toStringAsFixed(2),
                           style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
                       ],

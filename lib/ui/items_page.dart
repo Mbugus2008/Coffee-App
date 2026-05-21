@@ -16,7 +16,7 @@ class _ItemsPageState extends State<ItemsPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<StoreRepository>().loadItems();
+      context.read<StoreRepository>().refreshItemsFromServer();
     });
   }
 
@@ -32,7 +32,7 @@ class _ItemsPageState extends State<ItemsPage> {
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
             onPressed: () {
-              context.read<StoreRepository>().loadItems();
+              context.read<StoreRepository>().refreshItemsFromServer();
             },
           ),
         ],

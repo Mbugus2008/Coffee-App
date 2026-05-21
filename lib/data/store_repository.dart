@@ -1,12 +1,32 @@
 import 'package:flutter/foundation.dart';
 
+import 'item_api.dart';
 import 'store_models.dart';
+import '../services/bc/bc_services.dart';
 import 'user_database.dart';
 
+class StoreSyncResult {
+  const StoreSyncResult({
+    required this.attempted,
+    required this.synced,
+    required this.failed,
+    this.lastError,
+    this.failureDetails = const [],
+  });
+
+  final int attempted;
+  final int synced;
+  final int failed;
+  final String? lastError;
+  final List<String> failureDetails;
+}
+
 class StoreRepository extends ChangeNotifier {
-  StoreRepository(this._db);
+  StoreRepository(this._db, {ItemApi? itemApi})
+    : _itemApi = itemApi ?? ItemApi();
 
   final UserDatabase _db;
+  final ItemApi _itemApi;
   final List<StoreHeader> _headers = [];
   final List<Item> _items = [];
 
@@ -35,6 +55,22 @@ class StoreRepository extends ChangeNotifier {
     return _db.getStoresByEntry(entry);
   }
 
+  Future<void> createStore(Store store) {
+    return addStoreLineAndUpdateHeader(store);
+  }
+
+  Future<List<Store>> readStoresByEntry(String entry) {
+    return loadStoreLines(entry);
+  }
+
+  Future<void> updateStore(Store store) {
+    return updateStoreLineAndUpdateHeader(store);
+  }
+
+  Future<void> deleteStore({required int id, required String entry}) {
+    return deleteStoreLineAndUpdateHeader(lineId: id, entry: entry);
+  }
+
   Future<void> addStoreLine(Store line) async {
     await _db.insertStore(line);
   }
@@ -46,10 +82,59 @@ class StoreRepository extends ChangeNotifier {
     if (header == null) return;
 
     final lines = await _db.getStoresByEntry(line.entry);
-    final recomputedTotal = lines.fold<double>(0, (sum, item) {
-      final lineTotal = item.lineTotal ?? ((item.amount ?? 0) * (item.quantity ?? 0));
-      return sum + lineTotal;
-    });
+    final recomputedTotal = lines.fold<double>(
+      0,
+      (sum, item) => sum + (item.amount ?? 0),
+    );
+
+    final amountPaid = header.amountPaid ?? 0;
+    final updatedHeader = header.copyWith(
+      total: recomputedTotal,
+      itemCount: lines.length,
+      balance: recomputedTotal - amountPaid,
+    );
+
+    await _db.updateStoreHeader(updatedHeader);
+    await loadStoreHeaders();
+  }
+
+  Future<void> updateStoreLineAndUpdateHeader(Store line) async {
+    await _db.updateStore(line);
+
+    final header = await _db.getStoreHeaderByEntry(line.entry);
+    if (header == null) return;
+
+    final lines = await _db.getStoresByEntry(line.entry);
+    final recomputedTotal = lines.fold<double>(
+      0,
+      (sum, item) => sum + (item.amount ?? 0),
+    );
+
+    final amountPaid = header.amountPaid ?? 0;
+    final updatedHeader = header.copyWith(
+      total: recomputedTotal,
+      itemCount: lines.length,
+      balance: recomputedTotal - amountPaid,
+    );
+
+    await _db.updateStoreHeader(updatedHeader);
+    await loadStoreHeaders();
+  }
+
+  Future<void> deleteStoreLineAndUpdateHeader({
+    required int lineId,
+    required String entry,
+  }) async {
+    await _db.deleteStoreById(lineId);
+
+    final header = await _db.getStoreHeaderByEntry(entry);
+    if (header == null) return;
+
+    final lines = await _db.getStoresByEntry(entry);
+    final recomputedTotal = lines.fold<double>(
+      0,
+      (sum, item) => sum + (item.amount ?? 0),
+    );
 
     final amountPaid = header.amountPaid ?? 0;
     final updatedHeader = header.copyWith(
@@ -72,6 +157,89 @@ class StoreRepository extends ChangeNotifier {
       ..clear()
       ..addAll(loaded);
     notifyListeners();
+  }
+
+  Future<void> refreshItemsFromServer() async {
+    try {
+      final remoteItems = await _itemApi.fetchItems();
+      if (remoteItems.isNotEmpty) {
+        await _db.replaceItems(remoteItems);
+      }
+    } catch (_) {
+      // Keep using local cache when BC is unreachable.
+    }
+
+    await loadItems();
+  }
+
+  Future<StoreSyncResult> syncWithBc() async {
+    return syncPendingToBc();
+  }
+
+  Future<StoreSyncResult> syncPendingToBc() async {
+    final pendingHeaders = await _db.getPendingStoreHeaders();
+    final pendingLines = await _db.getPendingStores();
+
+    final attempted = pendingHeaders.length + pendingLines.length;
+    if (attempted == 0) {
+      return const StoreSyncResult(attempted: 0, synced: 0, failed: 0);
+    }
+
+    var synced = 0;
+    var failed = 0;
+    String? lastError;
+    final failureDetails = <String>[];
+
+    for (final header in pendingHeaders) {
+      try {
+        await BcServices.instance.createStoreHeader(header);
+        await _db.updateStoreHeaderBcSyncStatus(
+          entry: header.entry,
+          status: 'synced',
+        );
+        synced += 1;
+      } catch (error) {
+        lastError = error.toString();
+        failed += 1;
+        failureDetails.add('Header ${header.entry}: $lastError');
+        debugPrint('Failed to sync store header to BC: $error');
+        await _db.updateStoreHeaderBcSyncStatus(
+          entry: header.entry,
+          status: 'failed',
+        );
+      }
+    }
+
+    for (final line in pendingLines) {
+      final id = line.id;
+      if (id == null) {
+        failed += 1;
+        failureDetails.add('Line without local ID for entry ${line.entry}.');
+        continue;
+      }
+
+      try {
+        await BcServices.instance.createStoreLine(line);
+        await _db.updateStoreBcSyncStatus(id: id, status: 'synced');
+        synced += 1;
+      } catch (error) {
+        lastError = error.toString();
+        failed += 1;
+        failureDetails.add('Line $id (${line.entry}): $lastError');
+        debugPrint('Failed to sync store line to BC: $error');
+        await _db.updateStoreBcSyncStatus(id: id, status: 'failed');
+      }
+    }
+
+    await loadStoreHeaders();
+
+    return StoreSyncResult(
+      attempted: attempted,
+      synced: synced,
+      failed: failed,
+      lastError: lastError,
+      failureDetails: failureDetails,
+    );
   }
 
   Future<void> _seedSampleItems() async {

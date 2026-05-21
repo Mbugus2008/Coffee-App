@@ -210,6 +210,7 @@ class Store {
   final String entry;
   final String client;
   final String item;
+  final String itemDescription;
   final String variant;
   final double? amount;
   final double? quantity;
@@ -232,6 +233,7 @@ class Store {
     required this.entry,
     required this.client,
     required this.item,
+    required this.itemDescription,
     required this.variant,
     required this.amount,
     required this.quantity,
@@ -250,12 +252,61 @@ class Store {
     required this.amountPaid,
   });
 
+  Store copyWith({
+    int? id,
+    String? entry,
+    String? client,
+    String? item,
+    String? itemDescription,
+    String? variant,
+    double? amount,
+    double? quantity,
+    DateTime? time,
+    DateTime? date,
+    String? servedBy,
+    String? status,
+    String? factory,
+    bool? sent,
+    String? comments,
+    double? lineTotal,
+    String? stock,
+    String? crop,
+    int? balance,
+    int? paymode,
+    double? amountPaid,
+  }) {
+    return Store(
+      id: id ?? this.id,
+      entry: entry ?? this.entry,
+      client: client ?? this.client,
+      item: item ?? this.item,
+      itemDescription: itemDescription ?? this.itemDescription,
+      variant: variant ?? this.variant,
+      amount: amount ?? this.amount,
+      quantity: quantity ?? this.quantity,
+      time: time ?? this.time,
+      date: date ?? this.date,
+      servedBy: servedBy ?? this.servedBy,
+      status: status ?? this.status,
+      factory: factory ?? this.factory,
+      sent: sent ?? this.sent,
+      comments: comments ?? this.comments,
+      lineTotal: lineTotal ?? this.lineTotal,
+      stock: stock ?? this.stock,
+      crop: crop ?? this.crop,
+      balance: balance ?? this.balance,
+      paymode: paymode ?? this.paymode,
+      amountPaid: amountPaid ?? this.amountPaid,
+    );
+  }
+
   Map<String, Object?> toMap() {
     return {
       'ID': id,
       'Entry': entry,
       'Client': client,
       'Item': item,
+      'Item_Description': itemDescription,
       'Variant': variant,
       'Amount': amount,
       'Quantity': quantity,
@@ -281,6 +332,7 @@ class Store {
       entry: map['Entry'] as String? ?? '',
       client: map['Client'] as String? ?? '',
       item: map['Item'] as String? ?? '',
+      itemDescription: map['Item_Description'] as String? ?? '',
       variant: map['Variant'] as String? ?? '',
       amount: (map['Amount'] as num?)?.toDouble(),
       quantity: (map['Quantity'] as num?)?.toDouble(),

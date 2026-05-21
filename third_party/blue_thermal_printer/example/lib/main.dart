@@ -1,9 +1,10 @@
 import 'dart:async';
 
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
-import 'package:blue_thermal_printer_example/testprint.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import 'testprint.dart';
 
 void main() => runApp(new MyApp());
 

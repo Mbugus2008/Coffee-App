@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
@@ -8,9 +10,10 @@ import 'data/store_repository.dart';
 import 'data/user_database.dart';
 import 'data/user_repository.dart';
 import 'services/app_permission_service.dart';
+import 'services/collection_settings_service.dart';
+import 'services/company_info_service.dart';
 import 'services/session_store.dart';
 import 'ui/bc_settings_page.dart';
-import 'ui/collection_settings_page.dart';
 import 'ui/collections_list_page.dart';
 import 'ui/dashboard.dart';
 import 'ui/farmer_collections_page.dart';
@@ -145,9 +148,14 @@ class MyApp extends StatelessWidget {
               builder: (_) => const BcSettingsPage(),
               settings: const RouteSettings(name: '/bc-settings'),
             );
+          case '/settings':
+            return MaterialPageRoute(
+              builder: (_) => const BcSettingsPage(),
+              settings: const RouteSettings(name: '/settings'),
+            );
           case '/collection-settings':
             return MaterialPageRoute(
-              builder: (_) => const CollectionSettingsPage(),
+              builder: (_) => const BcSettingsPage(),
               settings: const RouteSettings(name: '/collection-settings'),
             );
           case '/users':
@@ -206,8 +214,24 @@ class _StartupPageState extends State<_StartupPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_preloadItemsInBackground());
       _decide();
     });
+  }
+
+  Future<void> _preloadItemsInBackground() async {
+    final storeRepo = context.read<StoreRepository>();
+    try {
+      await storeRepo.refreshItemsFromServer();
+    } catch (_) {}
+
+    try {
+      await CompanyInfoService.instance.syncFromServer();
+    } catch (_) {}
+
+    try {
+      await CollectionSettingsService.instance.syncFromBcSetup();
+    } catch (_) {}
   }
 
   Future<void> _decide() async {
@@ -361,46 +385,59 @@ class _PermissionGateState extends State<_PermissionGate> {
 
   @override
   Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        widget.child,
+        if (_checking || !_granted) _buildPermissionOverlay(),
+      ],
+    );
+  }
+
+  Widget _buildPermissionOverlay() {
     if (_checking) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return ColoredBox(
+        color: Theme.of(context).colorScheme.scrim.withAlpha(102),
+        child: const Center(child: CircularProgressIndicator()),
+      );
     }
 
-    if (_granted) {
-      return widget.child;
-    }
-
-    return Scaffold(
-      body: Center(
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.scrim.withAlpha(153),
+      child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.security, size: 48),
-                const SizedBox(height: 12),
-                const Text(
-                  'Permissions required',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'This app needs Bluetooth and (on some Android versions) Location permission to discover and connect to the printer/scale.',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: _request,
-                  child: const Text('Grant permissions'),
-                ),
-                const SizedBox(height: 8),
-                TextButton(
-                  onPressed: _permanentlyDenied ? openAppSettings : null,
-                  child: const Text('Open app settings'),
-                ),
-              ],
+          child: Card(
+            margin: const EdgeInsets.all(24),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.security, size: 48),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Permissions required',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'This app needs Bluetooth and (on some Android versions) Location permission to discover and connect to the printer/scale.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: _request,
+                    child: const Text('Grant permissions'),
+                  ),
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _permanentlyDenied ? openAppSettings : null,
+                    child: const Text('Open app settings'),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

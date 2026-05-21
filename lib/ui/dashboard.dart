@@ -84,7 +84,8 @@ class _DashboardState extends State<Dashboard> {
   Future<void> _printReceipt(DailyCollection item) async {
     var connected = await BluetoothPrinterService.instance.isConnected();
     if (!connected) {
-      connected = await BluetoothPrinterService.instance.connectAttachedPrinter();
+      connected = await BluetoothPrinterService.instance
+          .connectAttachedPrinter();
     }
 
     if (!connected) {
@@ -120,6 +121,10 @@ class _DashboardState extends State<Dashboard> {
     }
   }
 
+  Future<void> _openStores() async {
+    await Navigator.of(context).pushNamed('/stores');
+  }
+
   bool _isSameDate(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
   }
@@ -146,8 +151,9 @@ class _DashboardState extends State<Dashboard> {
     final currentRoute = routeName == '/' ? '/dashboard' : routeName;
     final now = DateTime.now();
 
-    final todayItems = allItems.where((item) => _isSameDate(_timestamp(item), now)).toList()
-      ..sort((a, b) => _timestamp(b).compareTo(_timestamp(a)));
+    final todayItems =
+        allItems.where((item) => _isSameDate(_timestamp(item), now)).toList()
+          ..sort((a, b) => _timestamp(b).compareTo(_timestamp(a)));
     final recentItems = [...allItems]
       ..sort((a, b) => _timestamp(b).compareTo(_timestamp(a)));
 
@@ -162,7 +168,10 @@ class _DashboardState extends State<Dashboard> {
 
     final topItem = todayItems.isEmpty
         ? null
-        : ([...todayItems]..sort((a, b) => (b.kgCollected ?? 0).compareTo(a.kgCollected ?? 0))).first;
+        : ([...todayItems]..sort(
+                (a, b) => (b.kgCollected ?? 0).compareTo(a.kgCollected ?? 0),
+              ))
+              .first;
 
     return Scaffold(
       appBar: AppBar(
@@ -171,7 +180,8 @@ class _DashboardState extends State<Dashboard> {
           IconButton(
             tooltip: 'Collections',
             icon: const Icon(Icons.local_shipping_outlined),
-            onPressed: () => Navigator.of(context).pushReplacementNamed('/collections'),
+            onPressed: () =>
+                Navigator.of(context).pushReplacementNamed('/collections'),
           ),
           IconButton(
             tooltip: 'Printer',
@@ -181,14 +191,28 @@ class _DashboardState extends State<Dashboard> {
         ],
       ),
       drawer: app_drawer.AppDrawer(currentRoute: currentRoute ?? '/dashboard'),
-      floatingActionButton: FloatingActionButton.small(
-        onPressed: _openAddCollection,
-        tooltip: 'Add collection',
-        child: const Icon(Icons.add),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: 'dashboard_stores_fab',
+            onPressed: _openStores,
+            tooltip: 'Stores',
+            child: const Icon(Icons.storefront_outlined),
+          ),
+          const SizedBox(height: 8),
+          FloatingActionButton.small(
+            heroTag: 'dashboard_add_collection_fab',
+            onPressed: _openAddCollection,
+            tooltip: 'Add collection',
+            child: const Icon(Icons.playlist_add_outlined),
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 72),
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
           child: Column(
             children: [
               Container(
@@ -306,7 +330,9 @@ class _DashboardState extends State<Dashboard> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: () => Navigator.of(context).pushReplacementNamed('/collections'),
+                      onPressed: () => Navigator.of(
+                        context,
+                      ).pushReplacementNamed('/collections'),
                       icon: const Icon(Icons.list_alt_outlined, size: 16),
                       label: const Text('List'),
                     ),
@@ -357,24 +383,29 @@ class _DashboardState extends State<Dashboard> {
                           onRefresh: _refreshDashboard,
                           child: recentItems.isEmpty
                               ? ListView(
-                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  physics:
+                                      const AlwaysScrollableScrollPhysics(),
                                   children: [
                                     SizedBox(
                                       height: 140,
                                       child: Center(
                                         child: Text(
                                           'No collections yet.',
-                                          style: theme.textTheme.bodyMedium?.copyWith(
-                                            color: colors.onSurfaceVariant,
-                                          ),
+                                          style: theme.textTheme.bodyMedium
+                                              ?.copyWith(
+                                                color: colors.onSurfaceVariant,
+                                              ),
                                         ),
                                       ),
                                     ),
                                   ],
                                 )
                               : ListView.builder(
-                                  physics: const AlwaysScrollableScrollPhysics(),
-                                  itemCount: recentItems.length > 4 ? 4 : recentItems.length,
+                                  physics:
+                                      const AlwaysScrollableScrollPhysics(),
+                                  itemCount: recentItems.length > 4
+                                      ? 4
+                                      : recentItems.length,
                                   itemBuilder: (context, index) {
                                     final item = recentItems[index];
                                     return _CompactCollectionTile(
@@ -468,8 +499,12 @@ class _CompactCollectionTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    final farmerName = item.farmersName.trim().isEmpty ? item.farmersNumber : item.farmersName;
-    final coffeeType = item.coffeTypeName.trim().isEmpty ? item.coffeeType : item.coffeTypeName;
+    final farmerName = item.farmersName.trim().isEmpty
+        ? item.farmersNumber
+        : item.farmersName;
+    final coffeeType = item.coffeTypeName.trim().isEmpty
+        ? item.coffeeType
+        : item.coffeTypeName;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
@@ -478,7 +513,10 @@ class _CompactCollectionTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         child: ListTile(
           dense: true,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 2,
+          ),
           leading: CircleAvatar(
             radius: 18,
             backgroundColor: colors.primaryContainer,
@@ -494,7 +532,9 @@ class _CompactCollectionTile extends StatelessWidget {
             farmerName,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
           ),
           subtitle: Text(
             '$coffeeType • $timestamp',
