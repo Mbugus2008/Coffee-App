@@ -12,6 +12,7 @@ import '../data/farmer_repository.dart';
 import '../services/bluetooth_printer_service.dart';
 import '../services/classic_scale_service.dart';
 import '../services/collection_settings_service.dart';
+import '../services/session_store.dart';
 
 class AddCollectionPage extends StatefulWidget {
   const AddCollectionPage({super.key});
@@ -33,13 +34,18 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   final _formKey = GlobalKey<FormState>();
   final _kgController = TextEditingController();
   final _bagsController = TextEditingController();
+  TextEditingController? _farmerSearchController;
+  FocusNode? _farmerSearchFocusNode;
   bool _isSaving = false;
   bool _isConnectingScale = false;
   bool _isScaleConnected = false;
   bool _isPrinterConnected = false;
+  bool _isUpdatingGrossFromScale = false;
+  bool _grossWeightFromScale = false;
   bool _awaitingGrossResetAfterHold = false;
   String _scaleStatus = 'Checking Classic Bluetooth...';
   StreamSubscription<double>? _weightSub;
+  DateTime _lastScaleWeightAt = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _connectionMonitorTimer;
   DateTime _lastScaleReconnectAttempt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastPrinterReconnectAttempt = DateTime.fromMillisecondsSinceEpoch(
@@ -52,6 +58,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   static const double _tarePerBag = 0.5;
   static const double _grossResetThresholdKg = 0.05;
   static const Duration _reconnectInterval = Duration(seconds: 6);
+  static const Duration _scaleStreamStaleAfter = Duration(seconds: 3);
   final List<_HeldLoad> _heldLoads = [];
 
   // Add a FocusNode for the Gross Weight field
@@ -261,12 +268,14 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     final noOfBags = _currentAutoBags();
     final settings = await CollectionSettingsService.instance.load();
     final tare = settings.tareWeight * noOfBags;
+    final currentUser =
+        (await SessionStore.instance.getCurrentUsername())?.trim() ?? 'local';
 
     final collection = DailyCollection(
       farmersNumber: _farmerNumber.trim(),
       collectionsDate: now,
       collectionNumber: 'COL-$no-$uniqueSuffix',
-      coffeeType: '',
+      coffeeType: settings.coffeeType,
       no: no,
       farmersName: _farmerName,
       kgCollected: kg,
@@ -277,11 +286,11 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
       sent: false,
       comments: '',
       cumm: null,
-      userName: 'local',
+      userName: currentUser,
       can: '',
       collectionTime: now,
-      collectType: 'Manual',
-      crop: '',
+      collectType: _currentCollectType(),
+      crop: settings.crop,
       gross: null,
       tare: tare,
       noOfBags: noOfBags,
@@ -317,17 +326,35 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
 
   bool _isGrossReset(double kg) => kg.abs() <= _grossResetThresholdKg;
 
+  bool _hasFarmerNumber() => _farmerNumber.trim().isNotEmpty;
+
+  bool _hasActiveScaleStream() {
+    if (!_isScaleConnected || _weightSub == null) {
+      return false;
+    }
+    return DateTime.now().difference(_lastScaleWeightAt) <=
+        _scaleStreamStaleAfter;
+  }
+
   void _handleLiveScaleWeight(double weight) {
+    _lastScaleWeightAt = DateTime.now();
+    if (!_hasFarmerNumber()) {
+      return;
+    }
+
     final nextValue = weight.toStringAsFixed(2);
     if (_kgController.text != nextValue) {
+      _isUpdatingGrossFromScale = true;
       _kgController.text = nextValue;
       _kgController.selection = TextSelection.collapsed(
         offset: nextValue.length,
       );
+      _isUpdatingGrossFromScale = false;
     }
 
     if (!mounted) return;
     setState(() {
+      _grossWeightFromScale = true;
       _updateAutoBags();
       if (_awaitingGrossResetAfterHold && _isGrossReset(weight)) {
         _awaitingGrossResetAfterHold = false;
@@ -431,11 +458,41 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     );
   }
 
+  Farmer? _selectedFarmer(List<Farmer> farmers) {
+    final farmerNo = _farmerNumber.trim();
+    if (farmerNo.isEmpty) {
+      return null;
+    }
+    for (final farmer in farmers) {
+      if (farmer.no.trim().toLowerCase() == farmerNo.toLowerCase()) {
+        return farmer;
+      }
+    }
+    return null;
+  }
+
+  bool _hasNonReversalCollectionTodayForFarmer(
+    List<DailyCollection> allCollections,
+    String farmerNo,
+    DateTime day,
+  ) {
+    final normalizedFarmerNo = farmerNo.trim().toLowerCase();
+    return allCollections.any((item) {
+      return item.farmersNumber.trim().toLowerCase() == normalizedFarmerNo &&
+          _isSameDate(_collectionTimestamp(item), day) &&
+          !_isReversalEntry(item);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    final isKeyboardVisible = MediaQuery.of(context).viewInsets.bottom > 0;
+    const accentColor = Color(0xFF0F766E);
+    const accentSoft = Color(0xFF99F6E4);
+    const pageTop = Color(0xFFF0FDFA);
+    const pageBottom = Color(0xFFFFFFFF);
+    final keyboardInset = MediaQuery.of(context).viewInsets.bottom;
     final farmers = context.watch<FarmerRepository>().farmers;
     final collections = context.watch<DailyCollectionRepository>().items;
     final now = DateTime.now();
@@ -458,9 +515,11 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     final netCollected = _calculateNetCollected();
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
-        backgroundColor: colors.surface,
+        backgroundColor: Colors.transparent,
         elevation: 0,
+        scrolledUnderElevation: 0,
         automaticallyImplyLeading: false,
         leading: IconButton(
           tooltip: 'Back',
@@ -493,634 +552,804 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
           const SizedBox(width: 12),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: Form(
-                key: _formKey,
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(2, 2, 2, 2),
-                  children: [
-                    // Farmer Search Card
-                    Card(
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(5),
-                        side: BorderSide(color: colors.outlineVariant),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(2),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Autocomplete<Farmer>(
-                                    optionsBuilder: (textEditingValue) {
-                                      final query = textEditingValue.text
-                                          .trim()
-                                          .toLowerCase();
-                                      if (query.isEmpty) {
-                                        return const Iterable<Farmer>.empty();
-                                      }
-                                      return farmers.where((farmer) {
-                                        return farmer.no.toLowerCase().contains(
-                                              query,
-                                            ) ||
-                                            farmer.name.toLowerCase().contains(
-                                              query,
-                                            );
-                                      });
-                                    },
-                                    displayStringForOption: (farmer) =>
-                                        farmer.no,
-                                    onSelected: (farmer) {
-                                      setState(() {
-                                        _farmerNumber = farmer.no;
-                                        _farmerName = farmer.name;
-                                        _factory = farmer.factory;
-                                      });
-                                      // Move focus to the Gross Weight field
-                                      _grossWeightFocusNode.requestFocus();
-                                    },
-                                    fieldViewBuilder:
-                                        (
-                                          context,
-                                          textEditingController,
-                                          focusNode,
-                                          onFieldSubmitted,
-                                        ) {
-                                          if (_farmerNumber.isNotEmpty &&
-                                              textEditingController.text !=
-                                                  _farmerNumber) {
-                                            textEditingController.text =
-                                                _farmerNumber;
-                                          }
-                                          return TextFormField(
-                                            controller: textEditingController,
-                                            focusNode: focusNode,
-                                            autofocus: true,
-                                            onChanged: (value) {
-                                              setState(() {
-                                                _farmerNumber = value;
-                                              });
-                                            },
-                                            decoration: const InputDecoration(
-                                              labelText: 'Farmer Number',
-                                              prefixIcon: Icon(Icons.search),
-                                              border: InputBorder.none,
-                                            ),
-                                            validator: (value) {
-                                              if (value == null ||
-                                                  value.trim().isEmpty) {
-                                                return 'Enter farmer number';
-                                              }
-                                              return null;
-                                            },
-                                          );
-                                        },
-                                    optionsViewBuilder:
-                                        (context, onSelected, options) {
-                                          return Align(
-                                            alignment: Alignment.topLeft,
-                                            child: Material(
-                                              elevation: 4,
-                                              borderRadius:
-                                                  BorderRadius.circular(16),
-                                              child: SizedBox(
-                                                width:
-                                                    MediaQuery.of(
-                                                      context,
-                                                    ).size.width -
-                                                    32,
-                                                child: ListView.separated(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        vertical: 8,
-                                                      ),
-                                                  shrinkWrap: true,
-                                                  itemCount: options.length,
-                                                  separatorBuilder: (_, __) =>
-                                                      const Divider(height: 1),
-                                                  itemBuilder:
-                                                      (context, index) {
-                                                        final farmer = options
-                                                            .elementAt(index);
-                                                        return ListTile(
-                                                          title: Text(
-                                                            farmer.no,
-                                                          ),
-                                                          subtitle: Text(
-                                                            farmer.name,
-                                                          ),
-                                                          onTap: () =>
-                                                              onSelected(
-                                                                farmer,
-                                                              ),
-                                                        );
-                                                      },
-                                                ),
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Container(
-                                    alignment: Alignment.centerLeft,
-                                    padding: const EdgeInsets.all(8),
-                                    child: Text(
-                                      _farmerName.isEmpty
-                                          ? 'Farmer name'
-                                          : _farmerName,
-                                      style: theme.textTheme.bodyMedium
-                                          ?.copyWith(
-                                            color: _farmerName.isEmpty
-                                                ? colors.onSurfaceVariant
-                                                : colors.onSurface,
-                                          ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    // Weight & Bags Card
-                    Card(
-                      elevation: 0,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(5),
-                        side: BorderSide(color: colors.outlineVariant),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(2),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  'Weight & Bags',
-                                  style: theme.textTheme.titleSmall?.copyWith(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                Text(
-                                  'Tare setting: 0.50 kg/bag',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: colors.onSurfaceVariant,
-                                  ),
-                                ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 5),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                SizedBox(
-                                  width: 100,
-                                  child: FilledButton.icon(
-                                    onPressed: _awaitingGrossResetAfterHold
-                                        ? null
-                                        : _addHeldLoad,
-                                    icon: const Icon(
-                                      Icons.pause_circle_outlined,
-                                    ),
-                                    label: const Text('Hold'),
-                                    style: FilledButton.styleFrom(
-                                      backgroundColor:
-                                          colors.surfaceContainerHighest,
-                                      foregroundColor: colors.onSurface,
-                                      minimumSize: const Size(150, 48),
-                                    ),
-                                  ),
-                                ),
-                                if (_heldLoads.isNotEmpty) ...[
-                                  const SizedBox(width: 7),
-                                  Expanded(
-                                    flex: 1,
-                                    child: Container(
-                                      padding: const EdgeInsets.all(6),
-                                      decoration: BoxDecoration(
-                                        color: colors.surfaceContainer,
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          const SizedBox(height: 4),
-                                          ..._heldLoads.asMap().entries.map((
-                                            entry,
-                                          ) {
-                                            final idx = entry.key;
-                                            final load = entry.value;
-                                            return Align(
-                                              alignment: Alignment.center,
-                                              child: FractionallySizedBox(
-                                                widthFactor: 0.9,
-                                                child: Container(
-                                                  margin: const EdgeInsets.only(
-                                                    bottom: 4,
-                                                  ),
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        horizontal: 8,
-                                                        vertical: 6,
-                                                      ),
-                                                  decoration: BoxDecoration(
-                                                    color: colors.surface,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          12,
-                                                        ),
-                                                    border: Border.all(
-                                                      color:
-                                                          colors.outlineVariant,
-                                                    ),
-                                                  ),
-                                                  child: Row(
-                                                    children: [
-                                                      Expanded(
-                                                        child: Text(
-                                                          '${idx + 1}: ${load.kg.toStringAsFixed(2)} kg, ${load.bags} bags',
-                                                          style: theme
-                                                              .textTheme
-                                                              .bodyMedium
-                                                              ?.copyWith(
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w600,
-                                                                fontSize: 11,
-                                                              ),
-                                                        ),
-                                                      ),
-                                                      InkWell(
-                                                        onTap: () =>
-                                                            _removeHeldLoad(
-                                                              idx,
-                                                            ),
-                                                        child: const Padding(
-                                                          padding:
-                                                              EdgeInsets.all(2),
-                                                          child: Icon(
-                                                            Icons.close,
-                                                            size: 16,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ),
-                                              ),
-                                            );
-                                          }),
-                                          Text(
-                                            'Held total: ${_heldGrossTotal().toStringAsFixed(2)} kg, ${_heldBagsTotal()} bags',
-                                            style: theme.textTheme.titleSmall
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.w700,
-                                                  fontSize: 12,
-                                                ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                            if (_awaitingGrossResetAfterHold)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 6),
-                                child: Text(
-                                  'Reset scale Gross Weight to 0.00 kg to enable next Hold.',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: colors.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                            const SizedBox(height: 16),
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Gross Weight',
-                                        style: theme.textTheme.bodySmall,
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Container(
-                                        alignment: Alignment.center,
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 12,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          border: Border(
-                                            bottom: BorderSide(
-                                              color: colors.outline,
-                                            ),
-                                          ),
-                                        ),
-                                        child: TextFormField(
-                                          controller: _kgController,
-                                          focusNode:
-                                              _grossWeightFocusNode, // Attach the FocusNode here
-                                          textAlign: TextAlign.center,
-                                          decoration: const InputDecoration(
-                                            border: InputBorder.none,
-                                            hintText: '0',
-                                          ),
-                                          keyboardType:
-                                              const TextInputType.numberWithOptions(
-                                                decimal: true,
-                                              ),
-                                          validator: (value) {
-                                            if (value == null ||
-                                                value.trim().isEmpty) {
-                                              return 'Enter kg';
-                                            }
-                                            if (double.tryParse(value) ==
-                                                null) {
-                                              return 'Valid number';
-                                            }
-                                            return null;
-                                          },
-                                          onChanged: (_) {
-                                            setState(() {});
-                                          },
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text(
-                                            'No of Bags',
-                                            style: theme.textTheme.bodySmall,
-                                          ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Container(
-                                        alignment: Alignment.center,
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 12,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          border: Border(
-                                            bottom: BorderSide(
-                                              color: colors.outline,
-                                            ),
-                                          ),
-                                        ),
-                                        child: TextFormField(
-                                          controller: _bagsController,
-                                          textAlign: TextAlign.center,
-                                          decoration: const InputDecoration(
-                                            border: InputBorder.none,
-                                            hintText: '0',
-                                          ),
-                                          readOnly: true,
-                                          keyboardType: TextInputType.number,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: _buildInfoBox(
-                                    context,
-                                    'Gross total',
-                                    '${grossTotal.toStringAsFixed(2)} kg',
-                                    colors,
-                                    theme.textTheme,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: _buildInfoBox(
-                                    context,
-                                    'Total tare',
-                                    '${totalTare.toStringAsFixed(2)} kg',
-                                    colors,
-                                    theme.textTheme,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: _buildInfoBox(
-                                    context,
-                                    'Net collected',
-                                    '${netCollected.toStringAsFixed(2)} kg',
-                                    colors,
-                                    theme.textTheme,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [pageTop, pageBottom],
+          ),
+        ),
+        child: SafeArea(
+          child: Stack(
+            children: [
+              Positioned(
+                top: -40,
+                right: -30,
+                child: Container(
+                  width: 160,
+                  height: 160,
+                  decoration: BoxDecoration(
+                    color: accentSoft.withAlpha(80),
+                    shape: BoxShape.circle,
+                  ),
                 ),
               ),
-            ),
-            if (!isKeyboardVisible)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              Positioned(
+                bottom: -50,
+                left: -40,
                 child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  width: 180,
+                  height: 180,
                   decoration: BoxDecoration(
-                    color: colors.surface,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: colors.outlineVariant),
+                    color: accentSoft.withAlpha(55),
+                    shape: BoxShape.circle,
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                ),
+              ),
+              Column(
+                children: [
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: Form(
+                      key: _formKey,
+                      child: ListView(
+                        shrinkWrap: true,
+                        primary: false,
+                        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
                         children: [
-                          Text(
-                            'Today\'s collections',
-                            style: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w700,
+                          // Farmer Search Card
+                          Card(
+                            elevation: 3,
+                            color: colors.surface.withAlpha(245),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              side: BorderSide(color: colors.outlineVariant),
                             ),
-                          ),
-                          Text(
-                            'Total: ${totalTodayKg.toStringAsFixed(2)} kg',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        height: 140,
-                        child: todayCollections.isEmpty
-                            ? Align(
-                                alignment: Alignment.centerLeft,
-                                child: Text(
-                                  'No collections recorded today.',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: colors.onSurfaceVariant,
+                            child: Padding(
+                              padding: const EdgeInsets.all(10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Autocomplete<Farmer>(
+                                          optionsBuilder: (textEditingValue) {
+                                            final query = textEditingValue.text
+                                                .trim()
+                                                .toLowerCase();
+                                            if (query.isEmpty) {
+                                              return const Iterable<
+                                                Farmer
+                                              >.empty();
+                                            }
+                                            return farmers.where((farmer) {
+                                              return farmer.no
+                                                      .toLowerCase()
+                                                      .contains(query) ||
+                                                  farmer.name
+                                                      .toLowerCase()
+                                                      .contains(query);
+                                            });
+                                          },
+                                          displayStringForOption: (farmer) =>
+                                              farmer.no,
+                                          onSelected: (farmer) {
+                                            setState(() {
+                                              _farmerNumber = farmer.no;
+                                              _farmerName = farmer.name;
+                                              _factory = farmer.factory;
+                                            });
+                                            // Move focus to the Gross Weight field
+                                            _grossWeightFocusNode
+                                                .requestFocus();
+
+                                            if (!_hasActiveScaleStream()) {
+                                              WidgetsBinding.instance
+                                                  .addPostFrameCallback((_) {
+                                                    if (!mounted) return;
+                                                    final text =
+                                                        _kgController.text;
+                                                    _kgController.selection =
+                                                        TextSelection(
+                                                          baseOffset: 0,
+                                                          extentOffset:
+                                                              text.length,
+                                                        );
+                                                  });
+                                            }
+                                          },
+                                          fieldViewBuilder:
+                                              (
+                                                context,
+                                                textEditingController,
+                                                focusNode,
+                                                onFieldSubmitted,
+                                              ) {
+                                                _farmerSearchController =
+                                                    textEditingController;
+                                                _farmerSearchFocusNode =
+                                                    focusNode;
+                                                if (textEditingController
+                                                        .text !=
+                                                    _farmerNumber) {
+                                                  textEditingController.text =
+                                                      _farmerNumber;
+                                                  textEditingController
+                                                          .selection =
+                                                      TextSelection.collapsed(
+                                                        offset: _farmerNumber
+                                                            .length,
+                                                      );
+                                                }
+                                                return TextFormField(
+                                                  controller:
+                                                      textEditingController,
+                                                  focusNode: focusNode,
+                                                  autofocus: true,
+                                                  onChanged: (value) {
+                                                    setState(() {
+                                                      _farmerNumber = value;
+                                                      if (value
+                                                          .trim()
+                                                          .isEmpty) {
+                                                        _farmerName = '';
+                                                        _factory = '';
+                                                      }
+                                                    });
+                                                  },
+                                                  decoration:
+                                                      const InputDecoration(
+                                                        labelText:
+                                                            'Farmer Number',
+                                                        prefixIcon: Icon(
+                                                          Icons.search,
+                                                        ),
+                                                        border:
+                                                            InputBorder.none,
+                                                      ),
+                                                  validator: (value) {
+                                                    if (value == null ||
+                                                        value.trim().isEmpty) {
+                                                      return 'Enter farmer number';
+                                                    }
+                                                    return null;
+                                                  },
+                                                );
+                                              },
+                                          optionsViewBuilder:
+                                              (context, onSelected, options) {
+                                                return Align(
+                                                  alignment: Alignment.topLeft,
+                                                  child: Material(
+                                                    elevation: 4,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          16,
+                                                        ),
+                                                    child: SizedBox(
+                                                      width:
+                                                          MediaQuery.of(
+                                                            context,
+                                                          ).size.width -
+                                                          32,
+                                                      child: ListView.separated(
+                                                        padding:
+                                                            const EdgeInsets.symmetric(
+                                                              vertical: 8,
+                                                            ),
+                                                        shrinkWrap: true,
+                                                        itemCount:
+                                                            options.length,
+                                                        separatorBuilder:
+                                                            (_, __) =>
+                                                                const Divider(
+                                                                  height: 1,
+                                                                ),
+                                                        itemBuilder:
+                                                            (context, index) {
+                                                              final farmer =
+                                                                  options
+                                                                      .elementAt(
+                                                                        index,
+                                                                      );
+                                                              return ListTile(
+                                                                title: Text(
+                                                                  farmer.no,
+                                                                ),
+                                                                subtitle: Text(
+                                                                  farmer.name,
+                                                                ),
+                                                                onTap: () =>
+                                                                    onSelected(
+                                                                      farmer,
+                                                                    ),
+                                                              );
+                                                            },
+                                                      ),
+                                                    ),
+                                                  ),
+                                                );
+                                              },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Container(
+                                          alignment: Alignment.centerLeft,
+                                          padding: const EdgeInsets.all(8),
+                                          child: Text(
+                                            _farmerName.isEmpty
+                                                ? 'Farmer name'
+                                                : _farmerName,
+                                            style: theme.textTheme.bodyMedium
+                                                ?.copyWith(
+                                                  color: _farmerName.isEmpty
+                                                      ? colors.onSurfaceVariant
+                                                      : colors.onSurface,
+                                                ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ),
-                              )
-                            : ListView.separated(
-                                itemCount: todayCollections.length,
-                                separatorBuilder: (_, __) =>
-                                    const Divider(height: 10),
-                                itemBuilder: (context, index) {
-                                  final item = todayCollections[index];
-                                  final farmerNumber = item.farmersNumber
-                                      .trim();
-                                  final farmerName = item.farmersName.trim();
-                                  final summary =
-                                      '${(item.kgCollected ?? 0).toStringAsFixed(2)} kg • ${item.noOfBags ?? 0} bags';
-                                  final hasExistingReversal = _hasReversalFor(
-                                    item,
-                                    collections,
-                                  );
-                                  final canReverse =
-                                      !_isReversalEntry(item) &&
-                                      !hasExistingReversal &&
-                                      ((item.kgCollected ?? 0) > 0 ||
-                                          (item.gross ?? 0) > 0 ||
-                                          (item.tare ?? 0) > 0);
-                                  return Row(
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          // Weight & Bags Card
+                          Card(
+                            elevation: 3,
+                            color: colors.surface.withAlpha(245),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              side: BorderSide(color: colors.outlineVariant),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(10),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        'Weight & Bags',
+                                        style: theme.textTheme.titleSmall
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                      ),
+                                      Text(
+                                        'Tare setting: 0.50 kg/bag',
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: colors.onSurfaceVariant,
+                                            ),
+                                      ),
+                                    ],
+                                  ),
+
+                                  const SizedBox(height: 5),
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      SizedBox(
+                                        width: 100,
+                                        child: FilledButton.icon(
+                                          onPressed:
+                                              _awaitingGrossResetAfterHold
+                                              ? null
+                                              : _addHeldLoad,
+                                          icon: const Icon(
+                                            Icons.pause_circle_outlined,
+                                          ),
+                                          label: const Text('Hold'),
+                                          style: FilledButton.styleFrom(
+                                            backgroundColor:
+                                                colors.surfaceContainerHighest,
+                                            foregroundColor: colors.onSurface,
+                                            minimumSize: const Size(150, 48),
+                                          ),
+                                        ),
+                                      ),
+                                      if (_heldLoads.isNotEmpty) ...[
+                                        const SizedBox(width: 7),
+                                        Expanded(
+                                          flex: 1,
+                                          child: Container(
+                                            padding: const EdgeInsets.all(6),
+                                            decoration: BoxDecoration(
+                                              color: colors.surfaceContainer,
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                const SizedBox(height: 4),
+                                                ..._heldLoads.asMap().entries.map((
+                                                  entry,
+                                                ) {
+                                                  final idx = entry.key;
+                                                  final load = entry.value;
+                                                  return Align(
+                                                    alignment: Alignment.center,
+                                                    child: FractionallySizedBox(
+                                                      widthFactor: 0.9,
+                                                      child: Container(
+                                                        margin:
+                                                            const EdgeInsets.only(
+                                                              bottom: 4,
+                                                            ),
+                                                        padding:
+                                                            const EdgeInsets.symmetric(
+                                                              horizontal: 8,
+                                                              vertical: 6,
+                                                            ),
+                                                        decoration: BoxDecoration(
+                                                          color: colors.surface,
+                                                          borderRadius:
+                                                              BorderRadius.circular(
+                                                                12,
+                                                              ),
+                                                          border: Border.all(
+                                                            color: colors
+                                                                .outlineVariant,
+                                                          ),
+                                                        ),
+                                                        child: Row(
+                                                          children: [
+                                                            Expanded(
+                                                              child: Text(
+                                                                '${idx + 1}: ${load.kg.toStringAsFixed(2)} kg, ${load.bags} bags',
+                                                                style: theme
+                                                                    .textTheme
+                                                                    .bodyMedium
+                                                                    ?.copyWith(
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w600,
+                                                                      fontSize:
+                                                                          11,
+                                                                    ),
+                                                              ),
+                                                            ),
+                                                            InkWell(
+                                                              onTap: () =>
+                                                                  _removeHeldLoad(
+                                                                    idx,
+                                                                  ),
+                                                              child: const Padding(
+                                                                padding:
+                                                                    EdgeInsets.all(
+                                                                      2,
+                                                                    ),
+                                                                child: Icon(
+                                                                  Icons.close,
+                                                                  size: 16,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  );
+                                                }),
+                                                Text(
+                                                  'Held total: ${_heldGrossTotal().toStringAsFixed(2)} kg, ${_heldBagsTotal()} bags',
+                                                  style: theme
+                                                      .textTheme
+                                                      .titleSmall
+                                                      ?.copyWith(
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                        fontSize: 12,
+                                                      ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                  if (_awaitingGrossResetAfterHold)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 6),
+                                      child: Text(
+                                        'Reset scale Gross Weight to 0.00 kg to enable next Hold.',
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: colors.onSurfaceVariant,
+                                            ),
+                                      ),
+                                    ),
+                                  const SizedBox(height: 16),
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Expanded(
                                         child: Column(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
-                                          mainAxisSize: MainAxisSize.min,
                                           children: [
                                             Text(
-                                              farmerNumber,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: theme.textTheme.bodySmall
-                                                  ?.copyWith(
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
+                                              'Gross Weight',
+                                              style: theme.textTheme.bodySmall,
                                             ),
-                                            Text(
-                                              farmerName.isEmpty
-                                                  ? 'No name'
-                                                  : farmerName,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: theme.textTheme.bodySmall
-                                                  ?.copyWith(
-                                                    fontSize: 11,
-                                                    color:
-                                                        colors.onSurfaceVariant,
+                                            const SizedBox(height: 4),
+                                            Container(
+                                              alignment: Alignment.center,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    vertical: 12,
                                                   ),
+                                              decoration: BoxDecoration(
+                                                border: Border(
+                                                  bottom: BorderSide(
+                                                    color: colors.outline,
+                                                  ),
+                                                ),
+                                              ),
+                                              child: TextFormField(
+                                                controller: _kgController,
+                                                focusNode:
+                                                    _grossWeightFocusNode, // Attach the FocusNode here
+                                                textAlign: TextAlign.center,
+                                                readOnly: !_hasFarmerNumber(),
+                                                onTap: () {
+                                                  if (!_hasFarmerNumber()) {
+                                                    ScaffoldMessenger.of(
+                                                      context,
+                                                    ).showSnackBar(
+                                                      const SnackBar(
+                                                        content: Text(
+                                                          'Enter farmer number first.',
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }
+                                                },
+                                                decoration:
+                                                    const InputDecoration(
+                                                      border: InputBorder.none,
+                                                      hintText: '0',
+                                                    ),
+                                                keyboardType:
+                                                    const TextInputType.numberWithOptions(
+                                                      decimal: true,
+                                                    ),
+                                                validator: (value) {
+                                                  if (!_hasFarmerNumber()) {
+                                                    return 'Enter farmer number first';
+                                                  }
+                                                  if (value == null ||
+                                                      value.trim().isEmpty) {
+                                                    return 'Enter kg';
+                                                  }
+                                                  if (double.tryParse(value) ==
+                                                      null) {
+                                                    return 'Valid number';
+                                                  }
+                                                  return null;
+                                                },
+                                                onChanged: (_) {
+                                                  setState(() {});
+                                                  if (!_isUpdatingGrossFromScale) {
+                                                    _grossWeightFromScale =
+                                                        false;
+                                                  }
+                                                },
+                                              ),
                                             ),
                                           ],
                                         ),
                                       ),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        summary,
-                                        style: theme.textTheme.bodySmall,
-                                      ),
-                                      IconButton(
-                                        tooltip: 'Reprint receipt',
-                                        onPressed: _isSaving
-                                            ? null
-                                            : () => _reprintCollection(item),
-                                        icon: const Icon(
-                                          Icons.print_outlined,
-                                          size: 18,
-                                        ),
-                                      ),
-                                      IconButton(
-                                        tooltip: canReverse
-                                            ? 'Reverse entry'
-                                            : (hasExistingReversal
-                                                  ? 'Already reversed'
-                                                  : 'Not reversible'),
-                                        onPressed: _isSaving || !canReverse
-                                            ? null
-                                            : () => _confirmReverseCollection(
-                                                item,
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment
+                                                      .spaceBetween,
+                                              children: [
+                                                Text(
+                                                  'No of Bags',
+                                                  style:
+                                                      theme.textTheme.bodySmall,
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Container(
+                                              alignment: Alignment.center,
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    vertical: 12,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                border: Border(
+                                                  bottom: BorderSide(
+                                                    color: colors.outline,
+                                                  ),
+                                                ),
                                               ),
-                                        icon: Icon(
-                                          Icons.undo,
-                                          size: 18,
-                                          color: canReverse
-                                              ? Colors.red.shade700
-                                              : colors.onSurfaceVariant,
+                                              child: TextFormField(
+                                                controller: _bagsController,
+                                                textAlign: TextAlign.center,
+                                                decoration:
+                                                    const InputDecoration(
+                                                      border: InputBorder.none,
+                                                      hintText: '0',
+                                                    ),
+                                                readOnly: true,
+                                                keyboardType:
+                                                    TextInputType.number,
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                     ],
-                                  );
-                                },
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: _buildInfoBox(
+                                          context,
+                                          'Gross total',
+                                          '${grossTotal.toStringAsFixed(2)} kg',
+                                          colors,
+                                          theme.textTheme,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: _buildInfoBox(
+                                          context,
+                                          'Total tare',
+                                          '${totalTare.toStringAsFixed(2)} kg',
+                                          colors,
+                                          theme.textTheme,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: _buildInfoBox(
+                                          context,
+                                          'Net collected',
+                                          '${netCollected.toStringAsFixed(2)} kg',
+                                          colors,
+                                          theme.textTheme,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                ],
                               ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                        decoration: BoxDecoration(
+                          color: colors.surface,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: colors.outlineVariant),
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Today\'s collections',
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                Text(
+                                  'Total: ${totalTodayKg.toStringAsFixed(2)} kg',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Expanded(
+                              child: todayCollections.isEmpty
+                                  ? Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Text(
+                                        'No collections recorded today.',
+                                        style: theme.textTheme.bodySmall
+                                            ?.copyWith(
+                                              color: colors.onSurfaceVariant,
+                                            ),
+                                      ),
+                                    )
+                                  : ListView.separated(
+                                      itemCount: todayCollections.length,
+                                      separatorBuilder: (_, __) =>
+                                          const Divider(height: 10),
+                                      itemBuilder: (context, index) {
+                                        final item = todayCollections[index];
+                                        final farmerNumber = item.farmersNumber
+                                            .trim();
+                                        final farmerName = item.farmersName
+                                            .trim();
+                                        final summary =
+                                            '${(item.kgCollected ?? 0).toStringAsFixed(2)} kg • ${item.noOfBags ?? 0} bags';
+                                        final hasExistingReversal =
+                                            _hasReversalFor(item, collections);
+                                        final isReversal = _isReversalEntry(
+                                          item,
+                                        );
+                                        final canReverse =
+                                            !_isReversalEntry(item) &&
+                                            !hasExistingReversal &&
+                                            ((item.kgCollected ?? 0) > 0 ||
+                                                (item.gross ?? 0) > 0 ||
+                                                (item.tare ?? 0) > 0);
+                                        return Row(
+                                          children: [
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Text(
+                                                    farmerNumber,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: theme
+                                                        .textTheme
+                                                        .bodySmall
+                                                        ?.copyWith(
+                                                          fontWeight:
+                                                              FontWeight.w600,
+                                                        ),
+                                                  ),
+                                                  Text(
+                                                    farmerName.isEmpty
+                                                        ? 'No name'
+                                                        : farmerName,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: theme
+                                                        .textTheme
+                                                        .bodySmall
+                                                        ?.copyWith(
+                                                          fontSize: 11,
+                                                          color: colors
+                                                              .onSurfaceVariant,
+                                                        ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(
+                                              summary,
+                                              style: theme.textTheme.bodySmall,
+                                            ),
+                                            IconButton(
+                                              tooltip:
+                                                  isReversal ||
+                                                      hasExistingReversal
+                                                  ? 'Reversed transactions cannot be printed'
+                                                  : 'Reprint receipt',
+                                              onPressed:
+                                                  _isSaving ||
+                                                      isReversal ||
+                                                      hasExistingReversal
+                                                  ? null
+                                                  : () => _reprintCollection(
+                                                      item,
+                                                    ),
+                                              icon: const Icon(
+                                                Icons.print_outlined,
+                                                size: 18,
+                                              ),
+                                            ),
+                                            IconButton(
+                                              tooltip: canReverse
+                                                  ? 'Reverse entry'
+                                                  : (hasExistingReversal
+                                                        ? 'Already reversed'
+                                                        : 'Not reversible'),
+                                              onPressed:
+                                                  _isSaving || !canReverse
+                                                  ? null
+                                                  : () =>
+                                                        _confirmReverseCollection(
+                                                          item,
+                                                        ),
+                                              icon: Icon(
+                                                Icons.undo,
+                                                size: 18,
+                                                color: canReverse
+                                                    ? Colors.red.shade700
+                                                    : colors.onSurfaceVariant,
+                                              ),
+                                            ),
+                                          ],
+                                        );
+                                      },
+                                    ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 84),
+                ],
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: AnimatedPadding(
+                  duration: const Duration(milliseconds: 120),
+                  curve: Curves.easeOut,
+                  padding: EdgeInsets.fromLTRB(
+                    16,
+                    4,
+                    16,
+                    keyboardInset > 0 ? keyboardInset + 8 : 16,
+                  ),
+                  child: FilledButton.icon(
+                    onPressed: _isSaving ? null : _printReceipt,
+                    icon: _isSaving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.print_outlined),
+                    label: Text(
+                      _isSaving
+                          ? 'Printing...'
+                          : 'Print ${netCollected.toStringAsFixed(2)} kg',
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: accentColor,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      minimumSize: const Size(double.infinity, 56),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
                   ),
                 ),
               ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: FilledButton.icon(
-                onPressed: _isSaving ? null : _printReceipt,
-                icon: _isSaving
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.print_outlined),
-                label: Text(
-                  _isSaving
-                      ? 'Printing...'
-                      : 'Print ${netCollected.toStringAsFixed(2)} kg',
-                ),
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF5D4037),
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  minimumSize: const Size(double.infinity, 56),
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -1128,6 +1357,26 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
 
   Future<void> _printReceipt() async {
     if (!_formKey.currentState!.validate()) return;
+
+    final farmers = context.read<FarmerRepository>().farmers;
+    final selectedFarmer = _selectedFarmer(farmers);
+    final now = DateTime.now();
+    final allowsMultiple = selectedFarmer?.multipleDelivery == true;
+    if (!allowsMultiple &&
+        _hasNonReversalCollectionTodayForFarmer(
+          context.read<DailyCollectionRepository>().items,
+          _farmerNumber,
+          now,
+        )) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This farmer is limited to one collection per day. Enable Multiple delivery to allow more.',
+          ),
+        ),
+      );
+      return;
+    }
 
     if (_calculateNetCollected() < 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1144,21 +1393,22 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     });
 
     try {
-      // First save the collection
+      // Save first so collection persistence does not depend on printer state.
       final repository = context.read<DailyCollectionRepository>();
-      final now = DateTime.now();
       final no = now.millisecondsSinceEpoch;
       final uniqueSuffix = _random.nextInt(1000000).toString().padLeft(6, '0');
       final kg = double.tryParse(_kgController.text.trim());
       final noOfBags = _currentAutoBags();
       final settings = await CollectionSettingsService.instance.load();
       final tare = settings.tareWeight * noOfBags;
+      final currentUser =
+          (await SessionStore.instance.getCurrentUsername())?.trim() ?? 'local';
 
       final collection = DailyCollection(
         farmersNumber: _farmerNumber.trim(),
         collectionsDate: now,
         collectionNumber: 'COL-$no-$uniqueSuffix',
-        coffeeType: '',
+        coffeeType: settings.coffeeType,
         no: no,
         farmersName: _farmerName,
         kgCollected: kg,
@@ -1169,11 +1419,11 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
         sent: false,
         comments: '',
         cumm: null,
-        userName: 'local',
+        userName: currentUser,
         can: '',
         collectionTime: now,
-        collectType: 'Manual',
-        crop: '',
+        collectType: _currentCollectType(),
+        crop: settings.crop,
         gross: null,
         tare: tare,
         noOfBags: noOfBags,
@@ -1184,28 +1434,19 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
 
       await repository.addCollection(collection);
 
-      // Then print the receipt
-      await _printToThermalPrinter(collection);
+      String resultMessage = 'Printed successfully. Ready for next farmer.';
+      try {
+        await _printToThermalPrinter(collection);
+      } catch (printError) {
+        resultMessage =
+            'Saved successfully, but printing failed: $printError. You can reprint later.';
+      }
 
       if (!mounted) return;
-      setState(() {
-        _isSaving = false;
-        _farmerNumber = '';
-        _farmerName = '';
-        _factory = '';
-        _kgController.text = '0.00';
-        _bagsController.text = '0';
-        _heldLoads.clear();
-        _awaitingGrossResetAfterHold = false;
-        if (_isScaleConnected) {
-          _scaleStatus = 'Connected (Classic Bluetooth)';
-        }
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Printed successfully. Ready for next farmer.'),
-        ),
-      );
+      _resetForNextCollectionSession();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(resultMessage)));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1213,8 +1454,39 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
       });
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Print error: $e')));
+      ).showSnackBar(SnackBar(content: Text('Save error: $e')));
     }
+  }
+
+  void _resetForNextCollectionSession() {
+    setState(() {
+      _isSaving = false;
+      _farmerNumber = '';
+      _farmerName = '';
+      _factory = '';
+      _grossWeightFromScale = false;
+      _kgController.text = '0.00';
+      _bagsController.text = '0';
+      _heldLoads.clear();
+      _awaitingGrossResetAfterHold = false;
+      if (_isScaleConnected) {
+        _scaleStatus = 'Connected (Classic Bluetooth)';
+      }
+    });
+    // Explicitly clear controller-backed fields to avoid stale values.
+    _farmerSearchController?.value = const TextEditingValue(text: '');
+    _kgController.value = const TextEditingValue(text: '0.00');
+    _bagsController.value = const TextEditingValue(text: '0');
+
+    // Return focus to farmer search for the next entry.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _farmerSearchFocusNode?.requestFocus();
+    });
+  }
+
+  String _currentCollectType() {
+    return _grossWeightFromScale ? 'Auto' : 'Manual';
   }
 
   Future<void> _printToThermalPrinter(DailyCollection collection) async {
@@ -1235,6 +1507,18 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   }
 
   Future<void> _reprintCollection(DailyCollection collection) async {
+    final repository = context.read<DailyCollectionRepository>();
+    if (_isReversalEntry(collection) ||
+        _hasReversalFor(collection, repository.items)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Reversal transactions cannot be printed.'),
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isSaving = true;
     });

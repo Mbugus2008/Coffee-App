@@ -2,9 +2,12 @@ import 'package:flutter/services.dart';
 
 import '../data/daily_collection_model.dart';
 import '../data/store_models.dart';
+import 'bc/bc_odata_client.dart';
+import 'bc/bc_settings_store.dart';
 import 'bluetooth_serial_service.dart';
 import 'bluetooth_settings_service.dart';
 import 'company_info_service.dart';
+import 'session_store.dart';
 
 class PrinterDeviceInfo {
   const PrinterDeviceInfo({
@@ -148,6 +151,8 @@ class BluetoothPrinterService {
 
   final dynamic _printer = _BlueThermalPrinterAdapter.instance;
   final BluetoothSerialService _serial = BluetoothSerialService.instance;
+  final BcODataClient _odataClient = BcODataClient();
+  final Map<String, String> _factoryNameCache = <String, String>{};
 
   Future<List<PrinterDeviceInfo>> getBondedDevices() async {
     final dynamic bonded = await _printer.getBondedDevices();
@@ -257,32 +262,105 @@ class BluetoothPrinterService {
   Future<void> printReceipt(DailyCollection collection) async {
     final companyInfo = await CompanyInfoService.instance.loadLocal();
     final companyName = companyInfo.name.trim();
+    final companyAddress = companyInfo.address.trim();
+    final companyPhone = companyInfo.phoneNo.trim();
+    final printedAt = DateTime.now();
+    final collectionAt =
+        collection.collectionTime ?? collection.collectionsDate;
+    final noOfBags = collection.noOfBags ?? 0;
+    final netWeight = collection.kgCollected ?? 0;
+    final totalTare = collection.tare ?? 0;
+    final grossWeight = collection.gross ?? (netWeight + totalTare);
+    final tarePerBag = noOfBags > 0 ? totalTare / noOfBags : 0;
+    final seasonTotal = ((collection.cumm ?? 0) <= 0)
+        ? netWeight
+        : (collection.cumm ?? 0);
+
+    String servedBy = collection.userName.trim();
+    if (servedBy.isEmpty || servedBy.toLowerCase() == 'local') {
+      servedBy =
+          (await SessionStore.instance.getCurrentUsername())?.trim() ??
+          servedBy;
+    }
+    if (servedBy.isEmpty) {
+      servedBy = 'N/A';
+    }
+
+    final coffeeType = _firstNonEmpty([
+      collection.coffeTypeName,
+      collection.coffeeType,
+      '-',
+    ]).toUpperCase();
+    final season = _firstNonEmpty([collection.crop, '-']);
+    final entryType = _firstNonEmpty([collection.collectType, 'Manual Entry']);
+
     if (companyName.isNotEmpty) {
-      await _printer.printCustom(companyName, 1, 1);
-      await _printer.printNewLine();
+      await _printCompanyHeader(companyName);
     }
-    await _printer.printCustom('Collection\nReceipt', 2, 1);
-    await _printer.printNewLine();
-    await _printReceiptField('Farmer', collection.farmersName);
-    await _printReceiptField('Number', collection.farmersNumber);
-    if (collection.factory.trim().isNotEmpty) {
-      await _printReceiptField('Factory', collection.factory);
+    final factoryDisplayName = await _resolveFactoryDisplayName(
+      collection.factory.trim(),
+    );
+    if (factoryDisplayName.isNotEmpty) {
+      await _printer.printCustom(factoryDisplayName, 1, 1);
     }
+    if (companyAddress.isNotEmpty) {
+      await _printer.printCustom(companyAddress, 0, 1);
+    }
+    if (companyPhone.isNotEmpty) {
+      await _printer.printCustom(companyPhone, 0, 1);
+    }
+    await _printer.printCustom(
+      'Printed: ${_formatPrintedDate(printedAt)}',
+      0,
+      1,
+    );
+
+    await _printer.printNewLine();
+    await _printer.printCustom('--------------------------------', 0, 0);
+    await _printReceiptField('RECEIPT #', collection.collectionNumber);
     await _printReceiptField(
-      'Coll',
-      collection.collectionNumber,
-      ellipsisAtStart: true,
+      'MEMBER',
+      collection.farmersName.trim().isEmpty ? '-' : collection.farmersName,
+    );
+    await _printReceiptField('MEMBER #', collection.farmersNumber);
+    await _printReceiptField('COLLECTION DATE', _formatDate(collectionAt));
+    await _printReceiptField('SERVED BY', servedBy);
+
+    await _printer.printNewLine();
+    await _printer.printCustom('COFFEE COLLECTION', 1, 0);
+    await _printReceiptField('COFFEE TYPE', coffeeType);
+    await _printReceiptField('SEASON', season);
+    await _printReceiptField('No. OF BAGS', '$noOfBags');
+    await _printReceiptField('ENTRY TYPE', entryType);
+
+    await _printer.printNewLine();
+    await _printer.printCustom('WEIGHT DETAILS', 1, 0);
+    await _printReceiptField(
+      'GROSS WEIGHT',
+      '${grossWeight.toStringAsFixed(2)} kg',
     );
     await _printReceiptField(
-      'Kg',
-      (collection.kgCollected ?? 0).toStringAsFixed(2),
+      'TARE / BAG',
+      '${tarePerBag.toStringAsFixed(2)} kg',
     );
     await _printReceiptField(
-      'Date',
-      _formatDate(collection.collectionTime ?? collection.collectionsDate),
+      'TOTAL TARE',
+      '${totalTare.toStringAsFixed(2)} kg',
+    );
+
+    await _printer.printNewLine();
+    await _printer.printCustom('=========== NET WEIGHT ==========', 1, 1);
+    await _printer.printCustom('${netWeight.toStringAsFixed(2)} kg', 2, 1);
+    await _printer.printCustom('================================', 1, 1);
+
+    await _printer.printNewLine();
+    await _printReceiptField(
+      'SEASON TOTAL',
+      '${seasonTotal.toStringAsFixed(2)} kg',
     );
     await _printer.printNewLine();
-    await _printer.printCustom('Thank you', 1, 1);
+    await _printer.printCustom('Premium Coffee, Premium Returns', 0, 1);
+    await _printer.printCustom('A product of Inuka Technologies', 0, 1);
     await _printer.printNewLine();
     await _printer.printNewLine();
   }
@@ -296,7 +374,7 @@ class BluetoothPrinterService {
         : header.factoryName;
 
     if (companyName.isNotEmpty) {
-      await _printer.printCustom(companyName, 1, 1);
+      await _printCompanyHeader(companyName);
     }
     if (poBox.isNotEmpty) {
       await _printer.printCustom('P.O Box: $poBox', 0, 1);
@@ -382,9 +460,10 @@ class BluetoothPrinterService {
     String label,
     String value, {
     bool ellipsisAtStart = false,
+    int size = 1,
   }) async {
-    const labelWidth = 12;
-    const valueWidth = 20;
+    const labelWidth = 15;
+    const valueWidth = 17;
     await _printer.printLeftRight(
       _truncateForColumn('$label:', labelWidth),
       _truncateForColumn(
@@ -392,18 +471,121 @@ class BluetoothPrinterService {
         valueWidth,
         ellipsisAtStart: ellipsisAtStart,
       ),
-      1,
+      size,
       format: '%-${labelWidth}s%${valueWidth}s%n',
     );
   }
 
   String _formatDate(DateTime value) {
+    final year = value.year.toString().padLeft(4, '0');
+    final month = value.month.toString().padLeft(2, '0');
+    final day = value.day.toString().padLeft(2, '0');
+    final hour = value.hour.toString().padLeft(2, '0');
+    final minute = value.minute.toString().padLeft(2, '0');
+    return '$year-$month-$day $hour:$minute';
+  }
+
+  String _formatPrintedDate(DateTime value) {
     final day = value.day.toString().padLeft(2, '0');
     final month = value.month.toString().padLeft(2, '0');
     final year = value.year.toString();
     final hour = value.hour.toString().padLeft(2, '0');
     final minute = value.minute.toString().padLeft(2, '0');
-    return '$day-$month-$year $hour:$minute';
+    return '$day/$month/$year $hour:$minute';
+  }
+
+  String _firstNonEmpty(List<String> values) {
+    for (final value in values) {
+      final trimmed = value.trim();
+      if (trimmed.isNotEmpty) {
+        return trimmed;
+      }
+    }
+    return '';
+  }
+
+  String _compactForPrint(String value) {
+    return value.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  Future<String> _resolveFactoryDisplayName(String factoryValue) async {
+    final compact = _compactForPrint(factoryValue);
+    if (compact.isEmpty) {
+      return '';
+    }
+
+    final cached = _factoryNameCache[compact.toUpperCase()];
+    if (cached != null && cached.isNotEmpty) {
+      return cached;
+    }
+
+    try {
+      final settings = await BcSettingsStore.instance.load();
+      if (settings.username.trim().isEmpty || settings.password.isEmpty) {
+        return compact;
+      }
+
+      final escapedCode = compact.replaceAll("'", "''");
+      final rows = await _odataClient.getAll(
+        settings,
+        'Factories',
+        top: 1,
+        query: {'\$filter': "Code eq '$escapedCode'"},
+      );
+
+      if (rows.isNotEmpty) {
+        final name = (rows.first['Name'] as String?)?.trim() ?? '';
+        if (name.isNotEmpty) {
+          _factoryNameCache[compact.toUpperCase()] = name;
+          return name;
+        }
+      }
+    } catch (_) {
+      // Keep printing resilient when offline/unreachable.
+    }
+
+    return compact;
+  }
+
+  Future<void> _printCompanyHeader(String companyName) async {
+    final compact = _compactForPrint(companyName).toUpperCase();
+    if (compact.isEmpty) {
+      return;
+    }
+
+    // Size 2 can look stretched and wrap mid-word on long names.
+    // Use large font only for short headers, otherwise use normal font.
+    final size = compact.length <= 12 ? 2 : 1;
+    final maxCharsPerLine = size == 2 ? 12 : 24;
+    final lines = _wrapForHeader(compact, maxCharsPerLine);
+
+    for (final line in lines) {
+      await _printer.printCustom(line, size, 1);
+    }
+  }
+
+  List<String> _wrapForHeader(String text, int maxCharsPerLine) {
+    final words = text.split(' ').where((word) => word.isNotEmpty).toList();
+    if (words.isEmpty) {
+      return const [];
+    }
+
+    final lines = <String>[];
+    var current = words.first;
+
+    for (var i = 1; i < words.length; i++) {
+      final next = words[i];
+      final candidate = '$current $next';
+      if (candidate.length <= maxCharsPerLine) {
+        current = candidate;
+      } else {
+        lines.add(current);
+        current = next;
+      }
+    }
+
+    lines.add(current);
+    return lines;
   }
 
   String _normalizeAddress(String value) {

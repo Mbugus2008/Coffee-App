@@ -82,6 +82,17 @@ class _DashboardState extends State<Dashboard> {
   }
 
   Future<void> _printReceipt(DailyCollection item) async {
+    final allItems = context.read<DailyCollectionRepository>().items;
+    if (!_canPrintCollection(item, allItems)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Reversed transactions cannot be printed.'),
+        ),
+      );
+      return;
+    }
+
     var connected = await BluetoothPrinterService.instance.isConnected();
     if (!connected) {
       connected = await BluetoothPrinterService.instance
@@ -131,6 +142,48 @@ class _DashboardState extends State<Dashboard> {
 
   DateTime _timestamp(DailyCollection item) {
     return item.collectionTime ?? item.collectionsDate;
+  }
+
+  String _reversalKeyFor(DailyCollection collection) {
+    final collectionNumber = collection.collectionNumber.trim();
+    return collectionNumber.isEmpty
+        ? collection.no.toString()
+        : collectionNumber;
+  }
+
+  String _reversalCommentFor(DailyCollection collection) {
+    return 'Reversal of ${_reversalKeyFor(collection)}';
+  }
+
+  bool _isReversalEntry(DailyCollection collection) {
+    final collectType = collection.collectType.trim().toLowerCase();
+    final comments = collection.comments.trim().toLowerCase();
+    return collectType == 'reversal' || comments.startsWith('reversal of ');
+  }
+
+  bool _hasReversalFor(
+    DailyCollection original,
+    List<DailyCollection> allCollections,
+  ) {
+    final expectedComment = _reversalCommentFor(original).toLowerCase();
+    return allCollections.any(
+      (entry) =>
+          entry.no != original.no &&
+          entry.comments.trim().toLowerCase() == expectedComment,
+    );
+  }
+
+  bool _canPrintCollection(
+    DailyCollection collection,
+    List<DailyCollection> allCollections,
+  ) {
+    if (_isReversalEntry(collection)) {
+      return false;
+    }
+    if (_hasReversalFor(collection, allCollections)) {
+      return false;
+    }
+    return true;
   }
 
   String _formatDate(DateTime value) {
@@ -191,22 +244,25 @@ class _DashboardState extends State<Dashboard> {
         ],
       ),
       drawer: app_drawer.AppDrawer(currentRoute: currentRoute ?? '/dashboard'),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       floatingActionButton: Column(
         mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          FloatingActionButton.small(
+          FloatingActionButton.extended(
             heroTag: 'dashboard_stores_fab',
             onPressed: _openStores,
             tooltip: 'Stores',
-            child: const Icon(Icons.storefront_outlined),
+            icon: const Icon(Icons.storefront_outlined),
+            label: const Text('Stores'),
           ),
           const SizedBox(height: 8),
-          FloatingActionButton.small(
+          FloatingActionButton.extended(
             heroTag: 'dashboard_add_collection_fab',
             onPressed: _openAddCollection,
             tooltip: 'Add collection',
-            child: const Icon(Icons.playlist_add_outlined),
+            icon: const Icon(Icons.playlist_add_outlined),
+            label: const Text('Add Collection'),
           ),
         ],
       ),
@@ -408,10 +464,17 @@ class _DashboardState extends State<Dashboard> {
                                       : recentItems.length,
                                   itemBuilder: (context, index) {
                                     final item = recentItems[index];
+                                    final canPrint = _canPrintCollection(
+                                      item,
+                                      allItems,
+                                    );
                                     return _CompactCollectionTile(
                                       item: item,
                                       timestamp: _formatDate(_timestamp(item)),
-                                      onPrint: () => _printReceipt(item),
+                                      canPrint: canPrint,
+                                      onPrint: canPrint
+                                          ? () => _printReceipt(item)
+                                          : null,
                                     );
                                   },
                                 ),
@@ -488,12 +551,14 @@ class _CompactCollectionTile extends StatelessWidget {
   const _CompactCollectionTile({
     required this.item,
     required this.timestamp,
+    required this.canPrint,
     required this.onPrint,
   });
 
   final DailyCollection item;
   final String timestamp;
-  final VoidCallback onPrint;
+  final bool canPrint;
+  final VoidCallback? onPrint;
 
   @override
   Widget build(BuildContext context) {
@@ -541,12 +606,14 @@ class _CompactCollectionTile extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          trailing: IconButton(
-            visualDensity: VisualDensity.compact,
-            tooltip: 'Print receipt',
-            onPressed: onPrint,
-            icon: const Icon(Icons.receipt_long_outlined, size: 20),
-          ),
+          trailing: !canPrint
+              ? null
+              : IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Print receipt',
+                  onPressed: onPrint,
+                  icon: const Icon(Icons.receipt_long_outlined, size: 20),
+                ),
         ),
       ),
     );

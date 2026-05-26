@@ -14,7 +14,7 @@ class UserDatabase {
   static final UserDatabase instance = UserDatabase._();
 
   static const _dbName = 'coffee.db';
-  static const _dbVersion = 12;
+  static const _dbVersion = 13;
   static const _tableCollectionSettings = 'collection_settings';
   static const _tableCompanyInfo = 'company_info';
   static const _tableUsers = 'users';
@@ -28,6 +28,7 @@ class UserDatabase {
   bool _userSchemaEnsured = false;
   bool _storeSchemaEnsured = false;
   bool _companyInfoSchemaEnsured = false;
+  bool _farmerSchemaEnsured = false;
 
   Future<Database> get database async {
     final db = _database;
@@ -41,12 +42,16 @@ class UserDatabase {
       if (!_companyInfoSchemaEnsured) {
         await _ensureCompanyInfoSchema(db);
       }
+      if (!_farmerSchemaEnsured) {
+        await _ensureFarmerSchema(db);
+      }
       return db;
     }
     _database = await _initDatabase();
     await _ensureUsersSchema(_database!);
     await _ensureStoreSchema(_database!);
     await _ensureCompanyInfoSchema(_database!);
+    await _ensureFarmerSchema(_database!);
     return _database!;
   }
 
@@ -85,6 +90,7 @@ class UserDatabase {
           'Gender INTEGER, '
           'Bank TEXT NOT NULL, '
           'Bank_Account TEXT NOT NULL, '
+          'Multiple_Delivery INTEGER, '
           'Acreage REAL, '
           'No_of_Trees INTEGER, '
           'Other_Loans REAL, '
@@ -160,6 +166,7 @@ class UserDatabase {
             'Gender INTEGER, '
             'Bank TEXT NOT NULL, '
             'Bank_Account TEXT NOT NULL, '
+            'Multiple_Delivery INTEGER, '
             'Acreage REAL, '
             'No_of_Trees INTEGER, '
             'Other_Loans REAL, '
@@ -238,6 +245,9 @@ class UserDatabase {
         if (oldVersion < 12) {
           await _ensureCompanyInfoSchema(db);
         }
+        if (oldVersion < 13) {
+          await _ensureFarmerSchema(db);
+        }
       },
     );
   }
@@ -292,6 +302,19 @@ class UserDatabase {
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
     _companyInfoSchemaEnsured = true;
+  }
+
+  Future<void> _ensureFarmerSchema(DatabaseExecutor db) async {
+    final columns = await db.rawQuery('PRAGMA table_info($_tableFarmers)');
+    final hasMultipleDelivery = columns.any(
+      (row) => row['name'] == 'Multiple_Delivery',
+    );
+    if (!hasMultipleDelivery) {
+      await db.execute(
+        'ALTER TABLE $_tableFarmers ADD COLUMN Multiple_Delivery INTEGER',
+      );
+    }
+    _farmerSchemaEnsured = true;
   }
 
   Future<void> _createCollectionSettingsTable(DatabaseExecutor db) async {
@@ -580,6 +603,7 @@ class UserDatabase {
       _userSchemaEnsured = false;
       _storeSchemaEnsured = false;
       _companyInfoSchemaEnsured = false;
+      _farmerSchemaEnsured = false;
     }
   }
 
@@ -625,7 +649,7 @@ class UserDatabase {
     await db.insert(
       _tableFarmers,
       farmer.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
+      conflictAlgorithm: ConflictAlgorithm.abort,
     );
   }
 
@@ -637,6 +661,28 @@ class UserDatabase {
       where: 'No = ?',
       whereArgs: [farmer.no],
     );
+  }
+
+  Future<int> clearFarmerUpdatedFlag(String farmerNo) async {
+    final db = await database;
+    final no = farmerNo.trim();
+    if (no.isEmpty) return 0;
+    return db.update(
+      _tableFarmers,
+      {'Updated': 0},
+      where: 'TRIM(No) = ? COLLATE NOCASE',
+      whereArgs: [no],
+    );
+  }
+
+  Future<List<Farmer>> getFarmersWithPendingSync() async {
+    final db = await database;
+    final rows = await db.query(
+      _tableFarmers,
+      where: 'Updated = 1',
+      orderBy: 'Name ASC',
+    );
+    return rows.map(Farmer.fromMap).toList();
   }
 
   Future<void> replaceDailyCollections(List<DailyCollection> items) async {

@@ -13,6 +13,7 @@ class Farmer {
   final bool? gender;
   final String bank;
   final String bankAccount;
+  final bool? multipleDelivery;
   final double? acreage;
   final int? noOfTrees;
   final double? otherLoans;
@@ -41,6 +42,7 @@ class Farmer {
     required this.gender,
     required this.bank,
     required this.bankAccount,
+    required this.multipleDelivery,
     required this.acreage,
     required this.noOfTrees,
     required this.otherLoans,
@@ -70,6 +72,7 @@ class Farmer {
     bool? gender,
     String? bank,
     String? bankAccount,
+    bool? multipleDelivery,
     double? acreage,
     int? noOfTrees,
     double? otherLoans,
@@ -98,6 +101,7 @@ class Farmer {
       gender: gender ?? this.gender,
       bank: bank ?? this.bank,
       bankAccount: bankAccount ?? this.bankAccount,
+      multipleDelivery: multipleDelivery ?? this.multipleDelivery,
       acreage: acreage ?? this.acreage,
       noOfTrees: noOfTrees ?? this.noOfTrees,
       otherLoans: otherLoans ?? this.otherLoans,
@@ -133,6 +137,9 @@ class Farmer {
       'Gender': gender == null ? null : (gender! ? 1 : 0),
       'Bank': bank,
       'Bank_Account': bankAccount,
+      'Multiple_Delivery': multipleDelivery == null
+          ? null
+          : (multipleDelivery! ? 1 : 0),
       'Acreage': acreage,
       'No_of_Trees': noOfTrees,
       'Other_Loans': otherLoans,
@@ -164,6 +171,7 @@ class Farmer {
       gender: _toBool(map['Gender']),
       bank: map['Bank'] as String? ?? '',
       bankAccount: map['Bank_Account'] as String? ?? '',
+      multipleDelivery: _toBool(map['Multiple_Delivery']),
       acreage: (map['Acreage'] as num?)?.toDouble(),
       noOfTrees: map['No_of_Trees'] as int?,
       otherLoans: (map['Other_Loans'] as num?)?.toDouble(),
