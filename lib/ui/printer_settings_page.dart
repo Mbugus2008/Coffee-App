@@ -244,19 +244,16 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
     });
   }
 
-  Future<void> _pickDevice({required bool isPrinter}) async {
-    final candidates = isPrinter
-        ? _devices.where((d) => d.supportsPrinter).toList()
-        : _devices.where((d) => d.supportsScale).toList();
+  Future<void> _onConnectPrinterPressed() async {
+    if (!await _ensurePermissionsOrNotify()) return;
 
+    final candidates = _devices.where((d) => d.supportsPrinter).toList();
     if (candidates.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        const SnackBar(
           content: Text(
-            isPrinter
-                ? 'No paired classic Bluetooth printers found. Pair the printer in Android Bluetooth settings, then tap refresh.'
-                : 'No paired classic Bluetooth devices found. Pair the scale in Android Bluetooth settings, then tap refresh.',
+            'No paired printers found. Pair the printer in Android Bluetooth settings, then tap refresh.',
           ),
         ),
       );
@@ -273,11 +270,9 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
           itemBuilder: (context, index) {
             final device = candidates[index];
             return ListTile(
-              leading: const Icon(Icons.bluetooth),
+              leading: const Icon(Icons.print_outlined),
               title: Text(device.name),
-              subtitle: Text(
-                '${device.address} ΓÇó ${device.source}${device.supportsPrinter ? ' ΓÇó Printer' : ''}${device.supportsScale ? ' ΓÇó Scale' : ''}',
-              ),
+              subtitle: Text(device.address),
               onTap: () => Navigator.of(context).pop(device),
             );
           },
@@ -286,37 +281,15 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
     );
 
     if (!mounted || selected == null) return;
-    setState(() {
-      if (isPrinter) {
-        _selectedPrinter = selected;
-      } else {
-        _selectedScale = selected;
-      }
-    });
-  }
-
-  Future<void> _attachPrinter() async {
-    if (!await _ensurePermissionsOrNotify()) return;
-    if (!mounted) return;
-
-    final selected = _selectedPrinter;
-    if (selected == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a printer device first.')),
-      );
-      return;
-    }
-
-    var selectedChoice = selected;
 
     try {
-      final printerDevice = selectedChoice.printerDevice;
+      final printerDevice = selected.printerDevice;
       if (printerDevice != null) {
         await BluetoothPrinterService.instance.connect(printerDevice);
       } else {
         await BluetoothPrinterService.instance.connectByAddress(
-          name: selectedChoice.name,
-          address: selectedChoice.address,
+          name: selected.name,
+          address: selected.address,
         );
       }
     } catch (error) {
@@ -325,7 +298,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'Unable to connect: $error\nEnsure the printer is paired, powered on, and in printer/SPP mode.',
+            'Unable to connect: $error\nEnsure the printer is powered on and in range.',
           ),
         ),
       );
@@ -333,22 +306,119 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
     }
 
     await BluetoothSettingsService.instance.attachPrinter(
-      name: selectedChoice.name,
-      address: selectedChoice.address,
+      name: selected.name,
+      address: selected.address,
     );
 
     if (!mounted) return;
     setState(() {
       _attachedPrinter = BluetoothAttachment(
-        name: selectedChoice.name,
-        address: selectedChoice.address,
+        name: selected.name,
+        address: selected.address,
       );
-      _selectedPrinter = selectedChoice;
       _isConnected = true;
     });
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Printer attached: ${selectedChoice.name}')),
+      SnackBar(content: Text('Printer connected: ${selected.name}')),
     );
+  }
+
+  Future<void> _onConnectScalePressed() async {
+    if (!await _ensurePermissionsOrNotify()) return;
+
+    final candidates = _devices.where((d) => d.supportsScale).toList();
+    if (candidates.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No paired devices found. Pair the scale in Android Bluetooth settings, then tap refresh.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final selected = await showModalBottomSheet<_BluetoothChoice>(
+      context: context,
+      builder: (context) {
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemCount: candidates.length,
+          separatorBuilder: (_, __) => const Divider(height: 1),
+          itemBuilder: (context, index) {
+            final device = candidates[index];
+            return ListTile(
+              leading: const Icon(Icons.scale_outlined),
+              title: Text(device.name),
+              subtitle: Text(device.address),
+              onTap: () => Navigator.of(context).pop(device),
+            );
+          },
+        );
+      },
+    );
+
+    if (!mounted || selected == null) return;
+
+    await BluetoothSettingsService.instance.attachScale(
+      name: selected.name,
+      address: selected.address,
+    );
+
+    setState(() {
+      _attachedScale = BluetoothAttachment(
+        name: selected.name,
+        address: selected.address,
+      );
+    });
+
+    final connected = await ClassicScaleService.instance.connectToScale();
+    final scaleError = ClassicScaleService.instance.lastErrorMessage;
+
+    if (!mounted) return;
+    setState(() {
+      _isScaleConnected = connected;
+    });
+
+    if (!connected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            scaleError?.isNotEmpty == true
+                ? 'Scale connection failed: $scaleError'
+                : 'Scale connection failed. Ensure the scale is powered on and paired.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    await _scaleSub?.cancel();
+    _scaleSub = ClassicScaleService.instance.weightStream.listen((weight) {
+      if (!mounted) return;
+      setState(() {
+        _latestWeight = weight;
+      });
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Scale connected: ${selected.name}')),
+    );
+  }
+
+  Future<void> _onDisconnectPrinterPressed() async {
+    await BluetoothPrinterService.instance.disconnectAttachedPrinter();
+    await BluetoothSettingsService.instance.clearAttachedPrinter();
+    if (!mounted) return;
+    setState(() {
+      _isConnected = false;
+      _attachedPrinter = null;
+      _selectedPrinter = null;
+    });
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Printer disconnected.')));
   }
 
   Future<void> _detachPrinter() async {
@@ -469,6 +539,96 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    Widget buildStatusCard({
+      required String label,
+      required String? deviceName,
+      required bool isConnected,
+      required IconData icon,
+      required VoidCallback onConnect,
+      required VoidCallback onDisconnect,
+    }) {
+      final connected = isConnected && deviceName != null;
+      return Card(
+        elevation: 0,
+        color: colorScheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: colorScheme.outlineVariant),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    icon,
+                    color: connected ? colorScheme.primary : colorScheme.outline,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          label,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          connected
+                              ? deviceName!
+                              : 'Not connected',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color:
+                                connected
+                                    ? colorScheme.onSurface
+                                    : colorScheme.outline,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color:
+                          connected
+                              ? Colors.green
+                              : colorScheme.outline.withOpacity(0.3),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: connected
+                    ? OutlinedButton.icon(
+                        onPressed: onDisconnect,
+                        icon: const Icon(Icons.bluetooth_disabled),
+                        label: const Text('Disconnect'),
+                      )
+                    : FilledButton.icon(
+                        onPressed: _loading ? null : onConnect,
+                        icon: const Icon(Icons.bluetooth),
+                        label: const Text('Connect'),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return guard(Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
@@ -484,7 +644,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
             }
           },
         ),
-        title: const BrandedAppBarTitle('Bluetooth Settings1'),
+        title: const BrandedAppBarTitle('Bluetooth Settings'),
         actions: [
           IconButton(
             tooltip: 'Refresh',
@@ -508,7 +668,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
                   const SizedBox(width: 8),
                   Text(
                     'Refreshing...',
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    style: theme.textTheme.bodyMedium,
                   ),
                 ],
               ),
@@ -517,20 +677,18 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
             if (_loadError != null) ...[
               Card(
                 elevation: 0,
-                color: Theme.of(context).colorScheme.errorContainer,
+                color: colorScheme.errorContainer,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: ListTile(
                   leading: Icon(
                     Icons.warning_amber_outlined,
-                    color: Theme.of(context).colorScheme.onErrorContainer,
+                    color: colorScheme.onErrorContainer,
                   ),
                   title: Text(
                     _loadError!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onErrorContainer,
-                    ),
+                    style: TextStyle(color: colorScheme.onErrorContainer),
                   ),
                   trailing: _showPermissionSettingsAction
                       ? TextButton(
@@ -542,205 +700,42 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
               ),
               const SizedBox(height: 12),
             ],
-            Card(
-              elevation: 0,
-              color: Theme.of(context).colorScheme.surface,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-              ),
-              child: ListTile(
-                leading: Icon(
-                  _isConnected
-                      ? Icons.bluetooth_connected
-                      : Icons.bluetooth_disabled,
-                ),
-                title: const Text('Attached Printer'),
-                subtitle: Text(
-                  _attachedPrinter == null
-                      ? 'No printer attached'
-                      : '${_attachedPrinter!.name}\n${_attachedPrinter!.address}',
-                ),
-                trailing: _attachedPrinter == null
-                    ? null
-                    : TextButton(
-                        onPressed: _detachPrinter,
-                        child: const Text('Detach'),
-                      ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _pickDevice(isPrinter: true),
-                    icon: const Icon(Icons.print_outlined),
-                    label: Text(
-                      _selectedPrinter == null
-                          ? 'Select Printer'
-                          : _selectedPrinter!.name,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: _attachPrinter,
-                  child: const Text('Attach'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Card(
-              elevation: 0,
-              color: Theme.of(context).colorScheme.surface,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-              ),
-              child: ListTile(
-                leading: Icon(
-                  _isScaleConnected ? Icons.scale : Icons.scale_outlined,
-                ),
-                title: const Text('Attached Scale'),
-                subtitle: Text(
-                  _attachedScale == null
-                      ? 'No scale attached'
-                      : '${_attachedScale!.name}\n${_attachedScale!.address}',
-                ),
-                trailing: _attachedScale == null
-                    ? null
-                    : TextButton(
-                        onPressed: _detachScale,
-                        child: const Text('Detach'),
-                      ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _pickDevice(isPrinter: false),
-                    icon: const Icon(Icons.scale_outlined),
-                    label: Text(
-                      _selectedScale == null
-                          ? 'Select Scale'
-                          : _selectedScale!.name,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: _attachScale,
-                  child: const Text('Attach'),
-                ),
-              ],
+            buildStatusCard(
+              label: 'Printer',
+              deviceName: _attachedPrinter?.name,
+              isConnected: _isConnected,
+              icon: Icons.print_outlined,
+              onConnect: _onConnectPrinterPressed,
+              onDisconnect: _onDisconnectPrinterPressed,
             ),
             const SizedBox(height: 12),
-            Card(
-              elevation: 0,
-              color: Theme.of(context).colorScheme.surface,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-              ),
-              child: ListTile(
-                leading: Icon(
-                  _isScaleConnected
-                      ? Icons.bluetooth_connected
-                      : Icons.bluetooth_searching,
-                ),
-                title: const Text('Scale Live Connection'),
-                subtitle: Text(
-                  _latestWeight == null
-                      ? 'Optional: connect to read live weight while keeping the printer connected.'
-                      : 'Latest weight: ${_latestWeight!.toStringAsFixed(2)} kg',
-                ),
-                trailing: _isScaleConnected
-                    ? TextButton(
-                        onPressed: _disconnectScale,
-                        child: const Text('Disconnect'),
-                      )
-                    : FilledButton(
-                        onPressed: _isScaleConnecting ? null : _connectScale,
-                        child: Text(
-                          _isScaleConnecting ? 'Connecting' : 'Connect',
-                        ),
-                      ),
-              ),
+            buildStatusCard(
+              label: 'Scale',
+              deviceName: _attachedScale?.name,
+              isConnected: _isScaleConnected,
+              icon: Icons.scale_outlined,
+              onConnect: _onConnectScalePressed,
+              onDisconnect: _onDisconnectScalePressed,
             ),
-            const SizedBox(height: 16),
-            Text(
-              'Paired Devices: ${_devices.length}',
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-            if (_devices.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 24),
-                child: Center(
-                  child: Text(
-                    'No paired Bluetooth devices found. Pair devices in phone settings then tap refresh.',
-                    textAlign: TextAlign.center,
+            if (_isScaleConnected && _latestWeight != null) ...[
+              const SizedBox(height: 8),
+              Center(
+                child: Text(
+                  'Live weight: ${_latestWeight!.toStringAsFixed(2)} kg',
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: colorScheme.primary,
                   ),
                 ),
-              )
-            else
-              ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _devices.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (context, index) {
-                  final device = _devices[index];
-                  final capabilities = <String>[
-                    if (device.supportsPrinter) 'Printer',
-                    if (device.supportsScale) 'Scale',
-                  ];
-                  return ListTile(
-                    leading: const Icon(Icons.bluetooth),
-                    title: Text(device.name),
-                    subtitle: Text(
-                      '${device.address} • ${device.source}${capabilities.isEmpty ? '' : ' • ${capabilities.join(' / ')}'}',
-                    ),
-                    trailing: capabilities.isEmpty
-                        ? null
-                        : PopupMenuButton<String>(
-                            onSelected: (value) {
-                              setState(() {
-                                if (value == 'printer') {
-                                  _selectedPrinter = device;
-                                } else {
-                                  _selectedScale = device;
-                                }
-                              });
-                            },
-                            itemBuilder: (_) => [
-                              if (device.supportsPrinter)
-                                const PopupMenuItem(
-                                  value: 'printer',
-                                  child: Text('Use as Printer'),
-                                ),
-                              if (device.supportsScale)
-                                const PopupMenuItem(
-                                  value: 'scale',
-                                  child: Text('Use as Scale'),
-                                ),
-                            ],
-                          ),
-                  );
-                },
+              ),
+            ],
+            const SizedBox(height: 24),
+            if (_devices.isNotEmpty)
+              Text(
+                'Paired devices: ${_devices.length}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.outline,
+                ),
               ),
           ],
         ),

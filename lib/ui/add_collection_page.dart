@@ -62,7 +62,8 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   bool _useAutoCalculate = true;
   static const double _tarePerBag = 0.5;
   static const double _grossResetThresholdKg = 0.05;
-  static const Duration _reconnectInterval = Duration(seconds: 6);
+  static const Duration _printerReconnectInterval = Duration(seconds: 3);
+  static const Duration _scaleReconnectInterval = Duration(seconds: 6);
   static const Duration _scaleStreamStaleAfter = Duration(seconds: 3);
   final List<_HeldLoad> _heldLoads = [];
 
@@ -124,20 +125,24 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
 
     if (!_isScaleConnected &&
         !_isConnectingScale &&
-        _canAttemptReconnect(_lastScaleReconnectAttempt)) {
+        _canAttemptScaleReconnect(_lastScaleReconnectAttempt)) {
       _lastScaleReconnectAttempt = DateTime.now();
       await _connectScale();
     }
 
     if (!_isPrinterConnected &&
-        _canAttemptReconnect(_lastPrinterReconnectAttempt)) {
+        _canAttemptPrinterReconnect(_lastPrinterReconnectAttempt)) {
       _lastPrinterReconnectAttempt = DateTime.now();
       await _reconnectAttachedPrinter();
     }
   }
 
-  bool _canAttemptReconnect(DateTime lastAttempt) {
-    return DateTime.now().difference(lastAttempt) >= _reconnectInterval;
+  bool _canAttemptPrinterReconnect(DateTime lastAttempt) {
+    return DateTime.now().difference(lastAttempt) >= _printerReconnectInterval;
+  }
+
+  bool _canAttemptScaleReconnect(DateTime lastAttempt) {
+    return DateTime.now().difference(lastAttempt) >= _scaleReconnectInterval;
   }
 
   Future<void> _initializeScale() async {
@@ -167,7 +172,10 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   Future<void> _refreshPrinterStatus() async {
     bool connected = false;
     try {
-      connected = (await BlueThermalPrinter.instance.isConnected) == true;
+      // Check whether the *attached* printer is connected, not just any
+      // Bluetooth socket. This avoids stale state from the plugin singleton.
+      connected =
+          await BluetoothPrinterService.instance.isAttachedPrinterConnected();
     } catch (_) {
       connected = false;
     }
@@ -178,14 +186,23 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   }
 
   Future<void> _reconnectAttachedPrinter() async {
-    try {
-      final connected = await BluetoothPrinterService.instance
-          .connectAttachedPrinter();
-      if (connected) {
-        await _refreshPrinterStatus();
+    // Burst-retry up to 3 times with 2-second gaps. Thermal printers often
+    // need a few seconds after power-on before their Bluetooth module accepts
+    // connections.
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        final connected = await BluetoothPrinterService.instance
+            .connectAttachedPrinter();
+        if (connected) {
+          await _refreshPrinterStatus();
+          return;
+        }
+      } catch (error) {
+        debugPrint('Printer reconnect attempt $attempt failed: $error');
       }
-    } catch (_) {
-      // Keep monitor resilient; next cycle will retry.
+      if (attempt < 3) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
   }
 
