@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/daily_collection_repository.dart';
 import '../data/farmer_repository.dart';
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class FarmerCollectionsPage extends StatefulWidget {
@@ -12,7 +13,7 @@ class FarmerCollectionsPage extends StatefulWidget {
   State<FarmerCollectionsPage> createState() => _FarmerCollectionsPageState();
 }
 
-class _FarmerCollectionsPageState extends State<FarmerCollectionsPage> {
+class _FarmerCollectionsPageState extends State<FarmerCollectionsPage> with BackButtonGuard {
   DateTime _selectedDate = DateTime.now();
   String _query = '';
 
@@ -121,7 +122,7 @@ class _FarmerCollectionsPageState extends State<FarmerCollectionsPage> {
           farmer.name.toLowerCase().contains(query);
     }).toList();
 
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: BrandedAppBarTitle(
           'Farmer Collections • ${_formatDate(_selectedDate)}',
@@ -213,6 +214,6 @@ class _FarmerCollectionsPageState extends State<FarmerCollectionsPage> {
                 );
               },
             ),
-    );
+    ));
   }
 }

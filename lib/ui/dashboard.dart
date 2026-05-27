@@ -4,9 +4,11 @@ import 'package:provider/provider.dart';
 import '../data/daily_collection_model.dart';
 import '../data/daily_collection_repository.dart';
 import '../data/farmer_repository.dart';
+import '../services/bc/bc_settings_store.dart';
 import '../services/bluetooth_printer_service.dart';
 import 'add_collection_page.dart';
 import 'app_drawer.dart' as app_drawer;
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class Dashboard extends StatefulWidget {
@@ -16,7 +18,9 @@ class Dashboard extends StatefulWidget {
   State<Dashboard> createState() => _DashboardState();
 }
 
-class _DashboardState extends State<Dashboard> {
+class _DashboardState extends State<Dashboard> with BackButtonGuard {
+  String _currentFactory = '';
+
   @override
   void initState() {
     super.initState();
@@ -26,6 +30,8 @@ class _DashboardState extends State<Dashboard> {
   }
 
   Future<void> _refreshDashboard() async {
+    final settings = await BcSettingsStore.instance.load();
+    _currentFactory = settings.factory.trim();
     await Future.wait([
       context.read<DailyCollectionRepository>().loadCollections(),
       context.read<FarmerRepository>().loadFarmers(),
@@ -81,7 +87,7 @@ class _DashboardState extends State<Dashboard> {
     }
   }
 
-  Future<void> _printReceipt(DailyCollection item) async {
+  void _printReceipt(DailyCollection item) {
     final allItems = context.read<DailyCollectionRepository>().items;
     if (!_canPrintCollection(item, allItems)) {
       if (!mounted) return;
@@ -93,32 +99,43 @@ class _DashboardState extends State<Dashboard> {
       return;
     }
 
-    var connected = await BluetoothPrinterService.instance.isConnected();
-    if (!connected) {
-      connected = await BluetoothPrinterService.instance
-          .connectAttachedPrinter();
-    }
+    // Fire-and-forget so the UI is never blocked by Bluetooth.
+    () async {
+      var connected = await BluetoothPrinterService.instance.isConnected();
+      if (!connected) {
+        connected = await BluetoothPrinterService.instance
+            .connectAttachedPrinter();
+      }
 
-    if (!connected) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Attach and connect a printer first.')),
+      if (!connected) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Attach and connect a printer first.')),
+        );
+        return;
+      }
+
+      final breakdown = BluetoothPrinterService.buildFactoryBreakdown(
+        allItems,
+        item.farmersNumber,
       );
-      return;
-    }
 
-    try {
-      await BluetoothPrinterService.instance.printReceipt(item);
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Receipt sent to printer.')));
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Failed to print receipt.')));
-    }
+      try {
+        await BluetoothPrinterService.instance.printReceipt(
+          item,
+          factoryBreakdown: breakdown,
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Receipt sent to printer.')),
+        );
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to print receipt.')),
+        );
+      }
+    }();
   }
 
   Future<void> _openAddCollection() async {
@@ -204,10 +221,15 @@ class _DashboardState extends State<Dashboard> {
     final currentRoute = routeName == '/' ? '/dashboard' : routeName;
     final now = DateTime.now();
 
-    final todayItems =
-        allItems.where((item) => _isSameDate(_timestamp(item), now)).toList()
-          ..sort((a, b) => _timestamp(b).compareTo(_timestamp(a)));
-    final recentItems = [...allItems]
+    final factoryItems = allItems.where((item) {
+      return item.factory.trim().toUpperCase() == _currentFactory.toUpperCase();
+    }).toList();
+
+    final todayItems = factoryItems
+        .where((item) => _isSameDate(_timestamp(item), now))
+        .toList()
+      ..sort((a, b) => _timestamp(b).compareTo(_timestamp(a)));
+    final recentItems = [...factoryItems]
       ..sort((a, b) => _timestamp(b).compareTo(_timestamp(a)));
 
     final servedFarmers = <String>{};
@@ -226,7 +248,7 @@ class _DashboardState extends State<Dashboard> {
               ))
               .first;
 
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const BrandedAppBarTitle('Dashboard'),
         actions: [
@@ -234,7 +256,7 @@ class _DashboardState extends State<Dashboard> {
             tooltip: 'Collections',
             icon: const Icon(Icons.local_shipping_outlined),
             onPressed: () =>
-                Navigator.of(context).pushReplacementNamed('/collections'),
+                Navigator.of(context).pushNamed('/collections'),
           ),
           IconButton(
             tooltip: 'Printer',
@@ -388,7 +410,7 @@ class _DashboardState extends State<Dashboard> {
                     child: OutlinedButton.icon(
                       onPressed: () => Navigator.of(
                         context,
-                      ).pushReplacementNamed('/collections'),
+                      ).pushNamed('/collections'),
                       icon: const Icon(Icons.list_alt_outlined, size: 16),
                       label: const Text('List'),
                     ),
@@ -488,7 +510,7 @@ class _DashboardState extends State<Dashboard> {
           ),
         ),
       ),
-    );
+    ));
   }
 }
 

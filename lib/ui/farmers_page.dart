@@ -5,6 +5,7 @@ import '../data/daily_collection_repository.dart';
 import '../data/farmer_model.dart';
 import '../data/farmer_repository.dart';
 import 'add_farmer_page.dart';
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 import 'edit_farmer_page.dart';
 
@@ -15,7 +16,7 @@ class FarmersPage extends StatefulWidget {
   State<FarmersPage> createState() => _FarmersPageState();
 }
 
-class _FarmersPageState extends State<FarmersPage> {
+class _FarmersPageState extends State<FarmersPage> with BackButtonGuard {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
@@ -90,7 +91,7 @@ class _FarmersPageState extends State<FarmersPage> {
       totalKgByFarmer[farmerNo] = (totalKgByFarmer[farmerNo] ?? 0) + kg;
     }
 
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const BrandedAppBarTitle('Farmers'),
         automaticallyImplyLeading: false,
@@ -258,6 +259,6 @@ class _FarmersPageState extends State<FarmersPage> {
         tooltip: 'Add farmer',
         child: const Icon(Icons.person_add_alt_1),
       ),
-    );
+    ));
   }
 }

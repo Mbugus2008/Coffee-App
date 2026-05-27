@@ -38,13 +38,19 @@ class BluetoothSerialService {
         return;
       }
       await disconnect();
+      // Allow the native Bluetooth stack to fully release the socket.
+      await Future.delayed(const Duration(milliseconds: 800));
     }
 
-    try {
+    Future<void> doConnect() async {
       await _methodChannel.invokeMethod('connect', <String, dynamic>{
         'address': address.trim(),
       });
       _connectedAddress = normalizedAddress;
+    }
+
+    try {
+      await doConnect();
       return;
     } on PlatformException catch (error) {
       if (_isAlreadyConnectedError(error)) {
@@ -52,7 +58,11 @@ class BluetoothSerialService {
         _connectedAddress = normalizedAddress;
         return;
       }
-      rethrow;
+      // Retry once after a short delay — thermal printers often fail on the
+      // first attempt when the previous session hasn't fully timed out.
+      await Future.delayed(const Duration(seconds: 1));
+      await doConnect();
+      return;
     }
   }
 

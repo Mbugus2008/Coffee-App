@@ -7,6 +7,7 @@ import '../services/app_permission_service.dart';
 import '../services/bluetooth_printer_service.dart';
 import '../services/bluetooth_settings_service.dart';
 import '../services/classic_scale_service.dart';
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class _BluetoothChoice {
@@ -35,7 +36,7 @@ class PrinterSettingsPage extends StatefulWidget {
 }
 
 //flutter_pos_printer_platform_image_3
-class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
+class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButtonGuard {
   bool _loading = true;
   bool _isConnected = false;
   List<_BluetoothChoice> _devices = [];
@@ -468,7 +469,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
         leading: IconButton(
@@ -744,6 +745,6 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> {
           ],
         ),
       ),
-    );
+    ));
   }
 }

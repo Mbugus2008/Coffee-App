@@ -49,20 +49,7 @@ class BcServices {
 
   Future<List<Map<String, Object?>>> fetchDailyCollections() async {
     final settings = await BcSettingsStore.instance.load();
-    final factory = settings.factory.trim();
-    if (factory.isEmpty) {
-      return [];
-    }
-
-    final escapedFactory = factory.replaceAll("'", "''");
-    return _client.getAll(
-      settings,
-      'DailyCollections',
-      query: {
-        // OData v4 filter syntax.
-        '\$filter': "Factory eq '$escapedFactory'",
-      },
-    );
+    return _client.getAll(settings, 'DailyCollections');
   }
 
   Future<Map<String, Object?>> createDailyCollection(

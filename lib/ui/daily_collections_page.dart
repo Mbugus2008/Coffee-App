@@ -134,33 +134,45 @@ class _DailyCollectionsPageState extends State<DailyCollectionsPage> {
     ).showSnackBar(SnackBar(content: Text('Connected to ${selected.name}')));
   }
 
-  Future<void> _printReceipt(DailyCollection item) async {
-    var connected = await BluetoothPrinterService.instance.isConnected();
-    if (!connected) {
-      connected = await BluetoothPrinterService.instance
-          .connectAttachedPrinter();
-    }
+  void _printReceipt(DailyCollection item) {
+    // Fire-and-forget so the UI is never blocked by Bluetooth.
+    () async {
+      var connected = await BluetoothPrinterService.instance.isConnected();
+      if (!connected) {
+        connected = await BluetoothPrinterService.instance
+            .connectAttachedPrinter();
+      }
 
-    if (!connected) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Attach and connect a printer first.')),
+      if (!connected) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Attach and connect a printer first.')),
+        );
+        return;
+      }
+
+      final allItems = context.read<DailyCollectionRepository>().items;
+      final breakdown = BluetoothPrinterService.buildFactoryBreakdown(
+        allItems,
+        item.farmersNumber,
       );
-      return;
-    }
 
-    try {
-      await BluetoothPrinterService.instance.printReceipt(item);
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Receipt sent to printer.')));
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Failed to print receipt.')));
-    }
+      try {
+        await BluetoothPrinterService.instance.printReceipt(
+          item,
+          factoryBreakdown: breakdown,
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Receipt sent to printer.')),
+        );
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to print receipt.')),
+        );
+      }
+    }();
   }
 
   String _formatDateTime(DateTime value) {

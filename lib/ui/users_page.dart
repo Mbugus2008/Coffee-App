@@ -5,6 +5,7 @@ import '../data/user_model.dart';
 import '../data/user_repository.dart';
 import '../services/session_store.dart';
 import 'app_drawer.dart' as app_drawer;
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class UsersPage extends StatefulWidget {
@@ -14,7 +15,7 @@ class UsersPage extends StatefulWidget {
   State<UsersPage> createState() => _UsersPageState();
 }
 
-class _UsersPageState extends State<UsersPage> {
+class _UsersPageState extends State<UsersPage> with BackButtonGuard {
   @override
   void initState() {
     super.initState();
@@ -85,7 +86,7 @@ class _UsersPageState extends State<UsersPage> {
     final routeName = ModalRoute.of(context)?.settings.name;
     final currentRoute = routeName ?? '/users';
 
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const BrandedAppBarTitle('Coffee Users'),
         automaticallyImplyLeading: false,
@@ -212,7 +213,7 @@ class _UsersPageState extends State<UsersPage> {
         icon: const Icon(Icons.person_add_alt_1),
         label: const Text('Add User'),
       ),
-    );
+    ));
   }
 }
 

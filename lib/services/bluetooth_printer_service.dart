@@ -259,7 +259,34 @@ class BluetoothPrinterService {
     }
   }
 
-  Future<void> printReceipt(DailyCollection collection) async {
+  static bool _isReversalEntry(DailyCollection collection) {
+    final collectType = collection.collectType.trim().toLowerCase();
+    final comments = collection.comments.trim().toLowerCase();
+    return collectType == 'reversal' || comments.startsWith('reversal of ');
+  }
+
+  static Map<String, double> buildFactoryBreakdown(
+    List<DailyCollection> allCollections,
+    String farmerNo,
+  ) {
+    final normalized = farmerNo.trim().toLowerCase();
+    final breakdown = <String, double>{};
+    for (final c in allCollections) {
+      if (c.farmersNumber.trim().toLowerCase() != normalized) continue;
+      if (_isReversalEntry(c)) continue;
+      final factory = c.factory.trim().isEmpty ? 'Unknown' : c.factory.trim();
+      breakdown[factory] = (breakdown[factory] ?? 0) + (c.kgCollected ?? 0);
+    }
+    // Sort by factory name for consistent print order.
+    return Map<String, double>.fromEntries(
+      breakdown.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
+    );
+  }
+
+  Future<void> printReceipt(
+    DailyCollection collection, {
+    Map<String, double>? factoryBreakdown,
+  }) async {
     final companyInfo = await CompanyInfoService.instance.loadLocal();
     final companyName = companyInfo.name.trim();
     final companyAddress = companyInfo.address.trim();
@@ -358,6 +385,23 @@ class BluetoothPrinterService {
       'SEASON TOTAL',
       '${seasonTotal.toStringAsFixed(2)} kg',
     );
+
+    if (factoryBreakdown != null && factoryBreakdown.isNotEmpty) {
+      for (final entry in factoryBreakdown.entries) {
+        final factoryName = await _resolveFactoryDisplayName(entry.key);
+        final displayName = factoryName.isNotEmpty ? factoryName : entry.key;
+        await _printer.printLeftRight(
+          _truncateForColumn(displayName, 18),
+          _truncateForColumn(
+            '${entry.value.toStringAsFixed(2)} kg',
+            14,
+          ),
+          0,
+          format: '%-18s%14s%n',
+        );
+      }
+    }
+
     await _printer.printNewLine();
     await _printer.printCustom('Premium Coffee, Premium Returns', 0, 1);
     await _printer.printCustom('A product of Inuka Technologies', 0, 1);

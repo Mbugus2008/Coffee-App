@@ -38,16 +38,7 @@ class FarmerApi {
     }
 
     final rows = await _client.getAll(settings, 'Farmers', top: 5000);
-    final farmers = rows.map(_mapToFarmer).toList();
-    final configuredFactory = settings.factory.trim();
-    if (configuredFactory.isEmpty) {
-      return farmers;
-    }
-
-    final normalizedFactory = configuredFactory.toUpperCase();
-    return farmers.where((farmer) {
-      return farmer.factory.trim().toUpperCase() == normalizedFactory;
-    }).toList();
+    return rows.map(_mapToFarmer).toList();
   }
 
   Farmer _mapToFarmer(Map<String, Object?> json) {

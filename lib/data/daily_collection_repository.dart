@@ -59,21 +59,12 @@ class DailyCollectionRepository extends ChangeNotifier {
   }
 
   Future<void> refreshFromServer() async {
-    // Only sync from BC when a factory is configured.
-    final settings = await BcSettingsStore.instance.load();
-    if (settings.factory.trim().isEmpty) {
-      _items.clear();
-      notifyListeners();
-      return;
-    }
-
     try {
       final items = await _api.fetchDailyCollections();
       await syncFromServer(items);
       await UserRepository(_db).retryPendingPasswordSyncs();
     } catch (_) {
-      // If BC fetch fails, keep the last loaded list (do not fall back to
-      // potentially unfiltered local data).
+      // If BC fetch fails, keep the last loaded list.
     }
   }
 

@@ -9,7 +9,9 @@ import '../data/daily_collection_model.dart';
 import '../data/daily_collection_repository.dart';
 import '../data/farmer_model.dart';
 import '../data/farmer_repository.dart';
+import '../data/user_repository.dart';
 import '../services/bluetooth_printer_service.dart';
+import '../services/bc/bc_settings_store.dart';
 import '../services/classic_scale_service.dart';
 import '../services/collection_settings_service.dart';
 import '../services/session_store.dart';
@@ -43,6 +45,8 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   bool _isUpdatingGrossFromScale = false;
   bool _grossWeightFromScale = false;
   bool _awaitingGrossResetAfterHold = false;
+  bool _isAdmin = false;
+  bool _bagsManuallyEdited = false;
   String _scaleStatus = 'Checking Classic Bluetooth...';
   StreamSubscription<double>? _weightSub;
   DateTime _lastScaleWeightAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -54,6 +58,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   String _farmerNumber = '';
   String _farmerName = '';
   String _factory = '';
+  String _currentFactory = '';
   bool _useAutoCalculate = true;
   static const double _tarePerBag = 0.5;
   static const double _grossResetThresholdKg = 0.05;
@@ -70,6 +75,8 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     _bagsController.text = '0';
     _startBluetoothConnectionMonitor();
     unawaited(_initializeScale());
+    unawaited(_resolveAdminRights());
+    unawaited(_loadCurrentFactory());
 
     // Listen to native Bluetooth adapter/device events from the plugin state stream.
     _btStateSub = BlueThermalPrinter.instance.onStateChanged().listen(
@@ -137,6 +144,24 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     await _refreshPrinterStatus();
     await _refreshScaleStatus();
     await _connectScale();
+  }
+
+  Future<void> _loadCurrentFactory() async {
+    final settings = await BcSettingsStore.instance.load();
+    if (!mounted) return;
+    setState(() => _currentFactory = settings.factory.trim());
+  }
+
+  Future<void> _resolveAdminRights() async {
+    final username = await SessionStore.instance.getCurrentUsername();
+    if (!mounted || username == null) return;
+    final user = await context.read<UserRepository>().getLocalUserByUsername(
+      username,
+    );
+    if (!mounted) return;
+    setState(() {
+      _isAdmin = user?.rights.trim() == 'Admin';
+    });
   }
 
   Future<void> _refreshPrinterStatus() async {
@@ -313,12 +338,14 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   }
 
   int _currentAutoBags() {
-    final kg = double.tryParse(_kgController.text.trim()) ?? 0;
-    return _bagsFromWeight(kg);
+    return int.tryParse(_bagsController.text.trim()) ?? 0;
   }
 
   void _updateAutoBags() {
-    final bags = _currentAutoBags().toString();
+    if (_bagsManuallyEdited) return;
+    final bags = _bagsFromWeight(
+      double.tryParse(_kgController.text.trim()) ?? 0,
+    ).toString();
     if (_bagsController.text != bags) {
       _bagsController.text = bags;
     }
@@ -355,6 +382,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     if (!mounted) return;
     setState(() {
       _grossWeightFromScale = true;
+      _bagsManuallyEdited = false;
       _updateAutoBags();
       if (_awaitingGrossResetAfterHold && _isGrossReset(weight)) {
         _awaitingGrossResetAfterHold = false;
@@ -471,17 +499,20 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     return null;
   }
 
-  bool _hasNonReversalCollectionTodayForFarmer(
+  double _totalKgTodayForFarmer(
     List<DailyCollection> allCollections,
     String farmerNo,
     DateTime day,
   ) {
     final normalizedFarmerNo = farmerNo.trim().toLowerCase();
-    return allCollections.any((item) {
-      return item.farmersNumber.trim().toLowerCase() == normalizedFarmerNo &&
-          _isSameDate(_collectionTimestamp(item), day) &&
-          !_isReversalEntry(item);
-    });
+    return allCollections
+        .where((item) {
+          return item.farmersNumber.trim().toLowerCase() ==
+                  normalizedFarmerNo &&
+              _isSameDate(_collectionTimestamp(item), day) &&
+              !_isReversalEntry(item);
+        })
+        .fold(0.0, (sum, item) => sum + (item.kgCollected ?? 0));
   }
 
   @override
@@ -496,14 +527,18 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     final farmers = context.watch<FarmerRepository>().farmers;
     final collections = context.watch<DailyCollectionRepository>().items;
     final now = DateTime.now();
-    final todayCollections =
-        collections
-            .where((item) => _isSameDate(_collectionTimestamp(item), now))
-            .toList()
-          ..sort(
-            (a, b) =>
-                _collectionTimestamp(b).compareTo(_collectionTimestamp(a)),
-          );
+    final factoryCollections = collections.where((item) {
+      return item.factory.trim().toUpperCase() ==
+          _currentFactory.toUpperCase();
+    }).toList();
+
+    final todayCollections = factoryCollections
+        .where((item) => _isSameDate(_collectionTimestamp(item), now))
+        .toList()
+      ..sort(
+        (a, b) =>
+            _collectionTimestamp(b).compareTo(_collectionTimestamp(a)),
+      );
     final totalTodayKg = todayCollections.fold<double>(
       0,
       (sum, item) => sum + (item.kgCollected ?? 0),
@@ -1004,7 +1039,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
                                                 focusNode:
                                                     _grossWeightFocusNode, // Attach the FocusNode here
                                                 textAlign: TextAlign.center,
-                                                readOnly: !_hasFarmerNumber(),
+                                                readOnly: !_hasFarmerNumber() || !_isAdmin,
                                                 onTap: () {
                                                   if (!_hasFarmerNumber()) {
                                                     ScaffoldMessenger.of(
@@ -1013,6 +1048,16 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
                                                       const SnackBar(
                                                         content: Text(
                                                           'Enter farmer number first.',
+                                                        ),
+                                                      ),
+                                                    );
+                                                  } else if (!_isAdmin) {
+                                                    ScaffoldMessenger.of(
+                                                      context,
+                                                    ).showSnackBar(
+                                                      const SnackBar(
+                                                        content: Text(
+                                                          'Only admins can enter gross weight manually.',
                                                         ),
                                                       ),
                                                     );
@@ -1042,6 +1087,8 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
                                                   return null;
                                                 },
                                                 onChanged: (_) {
+                                                  _bagsManuallyEdited = false;
+                                                  _updateAutoBags();
                                                   setState(() {});
                                                   if (!_isUpdatingGrossFromScale) {
                                                     _grossWeightFromScale =
@@ -1093,9 +1140,11 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
                                                       border: InputBorder.none,
                                                       hintText: '0',
                                                     ),
-                                                readOnly: true,
                                                 keyboardType:
                                                     TextInputType.number,
+                                                onChanged: (_) {
+                                                  _bagsManuallyEdited = true;
+                                                },
                                               ),
                                             ),
                                           ],
@@ -1362,16 +1411,16 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     final selectedFarmer = _selectedFarmer(farmers);
     final now = DateTime.now();
     final allowsMultiple = selectedFarmer?.multipleDelivery == true;
-    if (!allowsMultiple &&
-        _hasNonReversalCollectionTodayForFarmer(
-          context.read<DailyCollectionRepository>().items,
-          _farmerNumber,
-          now,
-        )) {
+    final totalKgToday = _totalKgTodayForFarmer(
+      context.read<DailyCollectionRepository>().items,
+      _farmerNumber,
+      now,
+    );
+    if (!allowsMultiple && totalKgToday > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'This farmer is limited to one collection per day. Enable Multiple delivery to allow more.',
+            'This farmer is limited to one collection per day (already collected ${totalKgToday.toStringAsFixed(2)} kg). Enable Multiple delivery to allow more.',
           ),
         ),
       );
@@ -1399,10 +1448,19 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
       final uniqueSuffix = _random.nextInt(1000000).toString().padLeft(6, '0');
       final kg = double.tryParse(_kgController.text.trim());
       final noOfBags = _currentAutoBags();
+      final allItems = context.read<DailyCollectionRepository>().items;
       final settings = await CollectionSettingsService.instance.load();
       final tare = settings.tareWeight * noOfBags;
       final currentUser =
           (await SessionStore.instance.getCurrentUsername())?.trim() ?? 'local';
+      final existingTotal = allItems
+          .where((c) {
+            return c.farmersNumber.trim().toLowerCase() ==
+                    _farmerNumber.trim().toLowerCase() &&
+                !_isReversalEntry(c);
+          })
+          .fold(0.0, (sum, c) => sum + (c.kgCollected ?? 0));
+      final seasonCumm = existingTotal + (kg ?? 0);
 
       final collection = DailyCollection(
         farmersNumber: _farmerNumber.trim(),
@@ -1418,7 +1476,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
         factory: _factory,
         sent: false,
         comments: '',
-        cumm: null,
+        cumm: seasonCumm,
         userName: currentUser,
         can: '',
         collectionTime: now,
@@ -1434,19 +1492,16 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
 
       await repository.addCollection(collection);
 
-      String resultMessage = 'Printed successfully. Ready for next farmer.';
-      try {
-        await _printToThermalPrinter(collection);
-      } catch (printError) {
-        resultMessage =
-            'Saved successfully, but printing failed: $printError. You can reprint later.';
-      }
+      // Fire-and-forget printing so the UI is never blocked by Bluetooth.
+      _printToThermalPrinter(collection);
 
       if (!mounted) return;
       _resetForNextCollectionSession();
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text(resultMessage)));
+      ).showSnackBar(
+        const SnackBar(content: Text('Saved successfully. Printing receipt...')),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1467,6 +1522,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
       _grossWeightFromScale = false;
       _kgController.text = '0.00';
       _bagsController.text = '0';
+      _bagsManuallyEdited = false;
       _heldLoads.clear();
       _awaitingGrossResetAfterHold = false;
       if (_isScaleConnected) {
@@ -1490,23 +1546,43 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
   }
 
   Future<void> _printToThermalPrinter(DailyCollection collection) async {
-    // Use the shared dashboard printer flow to keep receipt format identical.
-    bool connected = await BluetoothPrinterService.instance.isConnected();
-    if (!connected) {
-      connected = await BluetoothPrinterService.instance
-          .connectAttachedPrinter();
-      if (mounted) {
-        setState(() => _isPrinterConnected = connected);
+    try {
+      bool connected = await BluetoothPrinterService.instance.isConnected();
+      if (!connected) {
+        connected = await BluetoothPrinterService.instance
+            .connectAttachedPrinter();
+        if (mounted) {
+          setState(() => _isPrinterConnected = connected);
+        }
       }
-    }
-    if (!connected) {
-      throw 'Printer not connected. Attach and connect a printer in Settings.';
-    }
+      if (!connected) {
+        throw 'Printer not connected. Attach and connect a printer in Settings.';
+      }
 
-    await BluetoothPrinterService.instance.printReceipt(collection);
+      final allItems = context.read<DailyCollectionRepository>().items;
+      final breakdown = BluetoothPrinterService.buildFactoryBreakdown(
+        allItems,
+        collection.farmersNumber,
+      );
+
+      await BluetoothPrinterService.instance.printReceipt(
+        collection,
+        factoryBreakdown: breakdown,
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Receipt printed successfully.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Printing failed: $error')),
+      );
+    }
   }
 
-  Future<void> _reprintCollection(DailyCollection collection) async {
+  void _reprintCollection(DailyCollection collection) {
     final repository = context.read<DailyCollectionRepository>();
     if (_isReversalEntry(collection) ||
         _hasReversalFor(collection, repository.items)) {
@@ -1519,32 +1595,13 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
       return;
     }
 
-    setState(() {
-      _isSaving = true;
-    });
+    // Fire-and-forget so the UI is never blocked by Bluetooth.
+    _printToThermalPrinter(collection);
 
-    try {
-      await _printToThermalPrinter(collection);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Reprinted receipt for ${collection.farmersName.trim().isEmpty ? collection.farmersNumber : collection.farmersName}.',
-          ),
-        ),
-      );
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Reprint failed: $error')));
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSaving = false;
-        });
-      }
-    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Reprint queued.')),
+    );
   }
 
   Future<void> _confirmReverseCollection(DailyCollection original) async {

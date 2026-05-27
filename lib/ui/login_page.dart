@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../data/user_repository.dart';
 import '../services/session_store.dart';
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 import 'set_password_page.dart';
 
@@ -14,7 +15,7 @@ class LoginPage extends StatefulWidget {
   State<LoginPage> createState() => _LoginPageState();
 }
 
-class _LoginPageState extends State<LoginPage> {
+class _LoginPageState extends State<LoginPage> with BackButtonGuard {
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -150,7 +151,7 @@ class _LoginPageState extends State<LoginPage> {
       color: const Color(0xFF5C4A3A),
     );
 
-    return Scaffold(
+    return guard(Scaffold(
       body: Stack(
         children: [
           SafeArea(
@@ -381,6 +382,6 @@ class _LoginPageState extends State<LoginPage> {
           ),
         ],
       ),
-    );
+    ));
   }
 }

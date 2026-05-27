@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'back_button_guard.dart';
+
 import '../services/bc/bc_odata_client.dart';
 import '../services/bc/bc_settings.dart';
 import '../services/bc/bc_settings_store.dart';
+import '../services/app_settings_store.dart';
 import '../services/collection_settings_service.dart';
 
 class _FactoryOption {
@@ -22,7 +25,7 @@ class BcSettingsPage extends StatefulWidget {
   State<BcSettingsPage> createState() => _BcSettingsPageState();
 }
 
-class _BcSettingsPageState extends State<BcSettingsPage> {
+class _BcSettingsPageState extends State<BcSettingsPage> with BackButtonGuard {
   final _formKey = GlobalKey<FormState>();
 
   final BcODataClient _odataClient = BcODataClient();
@@ -37,6 +40,7 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
   final _tareWeightController = TextEditingController();
 
   String? _selectedFactory;
+  String? _showCumulative;
   bool _loadingFactories = false;
   String? _factoriesError;
   List<_FactoryOption> _factories = const [];
@@ -70,6 +74,7 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
     _selectedFactory = settings.factory.trim().isEmpty
         ? null
         : settings.factory.trim();
+    _showCumulative = await AppSettingsStore.instance.loadShowCumulative();
     setState(() {
       _loading = false;
     });
@@ -220,6 +225,9 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
         tareWeight: tareWeight,
       ),
     );
+    await AppSettingsStore.instance.saveShowCumulative(
+      _showCumulative ?? AppSettingsStore.showCumulativeOptions.first,
+    );
 
     if (!mounted) return;
     setState(() {
@@ -243,7 +251,7 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
         leading: IconButton(
@@ -492,6 +500,26 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
                         ),
                       ),
                     ],
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: _showCumulative,
+                      decoration: const InputDecoration(
+                        labelText: 'Show cumulative',
+                      ),
+                      items: AppSettingsStore.showCumulativeOptions
+                          .map(
+                            (option) => DropdownMenuItem(
+                              value: option,
+                              child: Text(option),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) {
+                        setState(() {
+                          _showCumulative = value;
+                        });
+                      },
+                    ),
                     const SizedBox(height: 20),
                     FilledButton(
                       onPressed: _saving ? null : _save,
@@ -507,6 +535,6 @@ class _BcSettingsPageState extends State<BcSettingsPage> {
                 ),
               ),
             ),
-    );
+    ));
   }
 }

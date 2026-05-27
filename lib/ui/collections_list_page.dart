@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/daily_collection_repository.dart';
+import '../services/bc/bc_settings_store.dart';
 import 'add_collection_page.dart';
 import 'app_drawer.dart' as app_drawer;
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class CollectionsListPage extends StatefulWidget {
@@ -13,14 +15,18 @@ class CollectionsListPage extends StatefulWidget {
   State<CollectionsListPage> createState() => _CollectionsListPageState();
 }
 
-class _CollectionsListPageState extends State<CollectionsListPage> {
+class _CollectionsListPageState extends State<CollectionsListPage> with BackButtonGuard {
   final TextEditingController _filterController = TextEditingController();
   String _filter = '';
+  String _currentFactory = '';
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final settings = await BcSettingsStore.instance.load();
+      if (!mounted) return;
+      setState(() => _currentFactory = settings.factory.trim());
       context.read<DailyCollectionRepository>().loadCollections();
     });
   }
@@ -47,7 +53,11 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
     final items = context.watch<DailyCollectionRepository>().items;
     final query = _filter.trim().toLowerCase();
 
-    final filteredItems = items.where((item) {
+    final factoryItems = items.where((item) {
+      return item.factory.trim().toUpperCase() == _currentFactory.toUpperCase();
+    }).toList();
+
+    final filteredItems = factoryItems.where((item) {
       if (query.isEmpty) return true;
       return item.farmersName.toLowerCase().contains(query) ||
           item.farmersNumber.toLowerCase().contains(query) ||
@@ -55,7 +65,7 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
           item.collectionNumber.toLowerCase().contains(query);
     }).toList();
 
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const BrandedAppBarTitle('Collections'),
         leadingWidth: 96,
@@ -179,6 +189,6 @@ class _CollectionsListPageState extends State<CollectionsListPage> {
         tooltip: 'Add collection',
         child: const Icon(Icons.add),
       ),
-    );
+    ));
   }
 }

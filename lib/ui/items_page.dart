@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/store_repository.dart';
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class ItemsPage extends StatefulWidget {
@@ -11,7 +12,7 @@ class ItemsPage extends StatefulWidget {
   State<ItemsPage> createState() => _ItemsPageState();
 }
 
-class _ItemsPageState extends State<ItemsPage> {
+class _ItemsPageState extends State<ItemsPage> with BackButtonGuard {
   @override
   void initState() {
     super.initState();
@@ -24,7 +25,7 @@ class _ItemsPageState extends State<ItemsPage> {
   Widget build(BuildContext context) {
     final items = context.watch<StoreRepository>().items;
 
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const BrandedAppBarTitle('Items'),
         actions: [
@@ -67,6 +68,6 @@ class _ItemsPageState extends State<ItemsPage> {
                 );
               },
             ),
-    );
+    ));
   }
 }

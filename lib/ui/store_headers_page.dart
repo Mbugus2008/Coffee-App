@@ -6,6 +6,7 @@ import '../data/store_repository.dart';
 import '../services/bluetooth_printer_service.dart';
 import 'add_store_header_page.dart';
 import 'app_drawer.dart' as app_drawer;
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class StoreHeadersPage extends StatefulWidget {
@@ -15,7 +16,7 @@ class StoreHeadersPage extends StatefulWidget {
   State<StoreHeadersPage> createState() => _StoreHeadersPageState();
 }
 
-class _StoreHeadersPageState extends State<StoreHeadersPage> {
+class _StoreHeadersPageState extends State<StoreHeadersPage> with BackButtonGuard {
   String? _expandedDateKey;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -269,7 +270,7 @@ class _StoreHeadersPageState extends State<StoreHeadersPage> {
     final routeName = ModalRoute.of(context)?.settings.name;
     final currentRoute = routeName == '/' ? '/dashboard' : routeName;
 
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const BrandedAppBarTitle('Store Headers'),
         actions: [
@@ -466,7 +467,7 @@ class _StoreHeadersPageState extends State<StoreHeadersPage> {
         tooltip: 'Add store header',
         child: const Icon(Icons.add_shopping_cart_outlined),
       ),
-    );
+    ));
   }
 }
 

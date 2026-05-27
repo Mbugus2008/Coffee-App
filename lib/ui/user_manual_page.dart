@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 
+import 'back_button_guard.dart';
 import 'brand_logo.dart';
 
 class UserManualPage extends StatefulWidget {
@@ -11,7 +12,7 @@ class UserManualPage extends StatefulWidget {
   State<UserManualPage> createState() => _UserManualPageState();
 }
 
-class _UserManualPageState extends State<UserManualPage> {
+class _UserManualPageState extends State<UserManualPage> with BackButtonGuard {
   late final Future<String> _manualFuture;
 
   @override
@@ -22,7 +23,7 @@ class _UserManualPageState extends State<UserManualPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return guard(Scaffold(
       appBar: AppBar(
         title: const BrandedAppBarTitle('User Manual'),
         actions: [
@@ -100,7 +101,7 @@ class _UserManualPageState extends State<UserManualPage> {
           );
         },
       ),
-    );
+    ));
   }
 
   List<String> _extractTableOfContents(String manual) {
