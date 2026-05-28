@@ -42,13 +42,8 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
   List<_BluetoothChoice> _devices = [];
   String? _loadError;
   bool _showPermissionSettingsAction = false;
-  _BluetoothChoice? _selectedPrinter;
-  _BluetoothChoice? _selectedScale;
-
   BluetoothAttachment? _attachedPrinter;
   BluetoothAttachment? _attachedScale;
-
-  bool _isScaleConnecting = false;
   bool _isScaleConnected = false;
   double? _latestWeight;
   StreamSubscription<double>? _scaleSub;
@@ -209,35 +204,12 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
           .getAttachedScale();
     }
 
-    _BluetoothChoice? selectedPrinter;
-    _BluetoothChoice? selectedScale;
-    if (attachedPrinter != null) {
-      for (final device in devices) {
-        if (_normalizeAddress(device.address) ==
-            _normalizeAddress(attachedPrinter.address)) {
-          selectedPrinter = device;
-          break;
-        }
-      }
-    }
-    if (attachedScale != null) {
-      for (final device in devices) {
-        if (_normalizeAddress(device.address) ==
-            _normalizeAddress(attachedScale.address)) {
-          selectedScale = device;
-          break;
-        }
-      }
-    }
-
     if (!mounted) return;
     setState(() {
       _devices = devices;
       _isConnected = connected;
       _attachedPrinter = attachedPrinter;
       _attachedScale = attachedScale;
-      _selectedPrinter = selectedPrinter;
-      _selectedScale = selectedScale;
       _isScaleConnected = scaleConnected;
       _loadError = loadError;
       _loading = false;
@@ -282,29 +254,8 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
 
     if (!mounted || selected == null) return;
 
-    try {
-      final printerDevice = selected.printerDevice;
-      if (printerDevice != null) {
-        await BluetoothPrinterService.instance.connect(printerDevice);
-      } else {
-        await BluetoothPrinterService.instance.connectByAddress(
-          name: selected.name,
-          address: selected.address,
-        );
-      }
-    } catch (error) {
-      debugPrint('Unable to connect printer: $error');
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Unable to connect: $error\nEnsure the printer is powered on and in range.',
-          ),
-        ),
-      );
-      return;
-    }
-
+    // Always save the attachment so auto-connect can pick it up later,
+    // even if the device is off or out of range right now.
     await BluetoothSettingsService.instance.attachPrinter(
       name: selected.name,
       address: selected.address,
@@ -316,10 +267,38 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
         name: selected.name,
         address: selected.address,
       );
-      _isConnected = true;
     });
+
+    // Attempt to connect, but don't block saving on success.
+    var connectedNow = false;
+    try {
+      final printerDevice = selected.printerDevice;
+      if (printerDevice != null) {
+        await BluetoothPrinterService.instance.connect(printerDevice);
+      } else {
+        await BluetoothPrinterService.instance.connectByAddress(
+          name: selected.name,
+          address: selected.address,
+        );
+      }
+      connectedNow = true;
+    } catch (error) {
+      debugPrint('Unable to connect printer immediately: $error');
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isConnected = connectedNow;
+    });
+
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Printer connected: ${selected.name}')),
+      SnackBar(
+        content: Text(
+          connectedNow
+              ? 'Printer connected: ${selected.name}'
+              : 'Printer saved: ${selected.name}. It will connect automatically when turned on.',
+        ),
+      ),
     );
   }
 
@@ -361,11 +340,14 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
 
     if (!mounted || selected == null) return;
 
+    // Always save the attachment so auto-connect can pick it up later,
+    // even if the device is off or out of range right now.
     await BluetoothSettingsService.instance.attachScale(
       name: selected.name,
       address: selected.address,
     );
 
+    if (!mounted) return;
     setState(() {
       _attachedScale = BluetoothAttachment(
         name: selected.name,
@@ -373,6 +355,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
       );
     });
 
+    // Attempt to connect, but don't block saving on success.
     final connected = await ClassicScaleService.instance.connectToScale();
     final scaleError = ClassicScaleService.instance.lastErrorMessage;
 
@@ -381,30 +364,28 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
       _isScaleConnected = connected;
     });
 
-    if (!connected) {
+    if (connected) {
+      await _scaleSub?.cancel();
+      _scaleSub = ClassicScaleService.instance.weightStream.listen((weight) {
+        if (!mounted) return;
+        setState(() {
+          _latestWeight = weight;
+        });
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Scale connected: ${selected.name}')),
+      );
+    } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             scaleError?.isNotEmpty == true
-                ? 'Scale connection failed: $scaleError'
-                : 'Scale connection failed. Ensure the scale is powered on and paired.',
+                ? 'Scale saved: ${selected.name}. It will connect automatically when turned on.'
+                : 'Scale saved: ${selected.name}. It will connect automatically when turned on.',
           ),
         ),
       );
-      return;
     }
-
-    await _scaleSub?.cancel();
-    _scaleSub = ClassicScaleService.instance.weightStream.listen((weight) {
-      if (!mounted) return;
-      setState(() {
-        _latestWeight = weight;
-      });
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Scale connected: ${selected.name}')),
-    );
   }
 
   Future<void> _onDisconnectPrinterPressed() async {
@@ -414,55 +395,13 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
     setState(() {
       _isConnected = false;
       _attachedPrinter = null;
-      _selectedPrinter = null;
     });
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Printer disconnected.')));
   }
 
-  Future<void> _detachPrinter() async {
-    await BluetoothPrinterService.instance.disconnectAttachedPrinter();
-    await BluetoothSettingsService.instance.clearAttachedPrinter();
-    if (!mounted) return;
-    setState(() {
-      _isConnected = false;
-      _attachedPrinter = null;
-      _selectedPrinter = null;
-    });
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Printer detached.')));
-  }
-
-  Future<void> _attachScale() async {
-    final device = _selectedScale;
-    if (device == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a scale device first.')),
-      );
-      return;
-    }
-
-    await BluetoothSettingsService.instance.attachScale(
-      name: device.name,
-      address: device.address,
-    );
-
-    if (!mounted) return;
-    setState(() {
-      _attachedScale = BluetoothAttachment(
-        name: device.name,
-        address: device.address,
-      );
-    });
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Scale attached: ${device.name}')));
-  }
-
-  Future<void> _detachScale() async {
+  Future<void> _onDisconnectScalePressed() async {
     await ClassicScaleService.instance.disconnect();
     await _scaleSub?.cancel();
     _scaleSub = null;
@@ -471,60 +410,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
     setState(() {
       _isScaleConnected = false;
       _attachedScale = null;
-      _selectedScale = null;
       _latestWeight = null;
-    });
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Scale detached.')));
-  }
-
-  Future<void> _connectScale() async {
-    if (!await _ensurePermissionsOrNotify()) return;
-    if (!mounted) return;
-
-    setState(() {
-      _isScaleConnecting = true;
-    });
-
-    final connected = await ClassicScaleService.instance.connectToScale();
-    final scaleError = ClassicScaleService.instance.lastErrorMessage;
-
-    if (!mounted) return;
-    setState(() {
-      _isScaleConnecting = false;
-      _isScaleConnected = connected;
-    });
-
-    if (!connected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            scaleError?.isNotEmpty == true
-                ? 'Scale connection failed: $scaleError'
-                : 'Scale connection failed. Ensure the scale is powered on and paired in Bluetooth settings.',
-          ),
-        ),
-      );
-      return;
-    }
-
-    await _scaleSub?.cancel();
-    _scaleSub = ClassicScaleService.instance.weightStream.listen((weight) {
-      if (!mounted) return;
-      setState(() {
-        _latestWeight = weight;
-      });
-    });
-  }
-
-  Future<void> _disconnectScale() async {
-    await ClassicScaleService.instance.disconnect();
-    await _scaleSub?.cancel();
-    _scaleSub = null;
-    if (!mounted) return;
-    setState(() {
-      _isScaleConnected = false;
     });
     ScaffoldMessenger.of(
       context,
@@ -582,12 +468,10 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          connected
-                              ? deviceName!
-                              : 'Not connected',
+                          deviceName ?? 'Not connected',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color:
-                                connected
+                                deviceName != null
                                     ? colorScheme.onSurface
                                     : colorScheme.outline,
                           ),
@@ -603,7 +487,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
                       color:
                           connected
                               ? Colors.green
-                              : colorScheme.outline.withOpacity(0.3),
+                              : colorScheme.outline.withValues(alpha: 0.3),
                     ),
                   ),
                 ],
@@ -721,7 +605,7 @@ class _PrinterSettingsPageState extends State<PrinterSettingsPage> with BackButt
               const SizedBox(height: 8),
               Center(
                 child: Text(
-                  'Live weight: ${_latestWeight!.toStringAsFixed(2)} kg',
+                  'Live weight: ${_latestWeight?.toStringAsFixed(2) ?? '--'} kg',
                   style: theme.textTheme.bodyLarge?.copyWith(
                     fontWeight: FontWeight.w600,
                     color: colorScheme.primary,

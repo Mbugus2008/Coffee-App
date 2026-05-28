@@ -10,8 +10,8 @@ import '../data/daily_collection_repository.dart';
 import '../data/farmer_model.dart';
 import '../data/farmer_repository.dart';
 import '../data/user_repository.dart';
-import '../services/bluetooth_printer_service.dart';
 import '../services/bc/bc_settings_store.dart';
+import '../services/bluetooth_printer_service.dart';
 import '../services/classic_scale_service.dart';
 import '../services/collection_settings_service.dart';
 import '../services/session_store.dart';
@@ -174,8 +174,8 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     try {
       // Check whether the *attached* printer is connected, not just any
       // Bluetooth socket. This avoids stale state from the plugin singleton.
-      connected =
-          await BluetoothPrinterService.instance.isAttachedPrinterConnected();
+      connected = await BluetoothPrinterService.instance
+          .isAttachedPrinterConnected();
     } catch (_) {
       connected = false;
     }
@@ -351,7 +351,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
 
   int _bagsFromWeight(double kg) {
     if (kg <= 0) return 0;
-    return (kg / 90).round();
+    return (kg / 90).ceil();
   }
 
   int _currentAutoBags() {
@@ -545,17 +545,17 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     final collections = context.watch<DailyCollectionRepository>().items;
     final now = DateTime.now();
     final factoryCollections = collections.where((item) {
-      return item.factory.trim().toUpperCase() ==
-          _currentFactory.toUpperCase();
+      return item.factory.trim().toUpperCase() == _currentFactory.toUpperCase();
     }).toList();
 
-    final todayCollections = factoryCollections
-        .where((item) => _isSameDate(_collectionTimestamp(item), now))
-        .toList()
-      ..sort(
-        (a, b) =>
-            _collectionTimestamp(b).compareTo(_collectionTimestamp(a)),
-      );
+    final todayCollections =
+        factoryCollections
+            .where((item) => _isSameDate(_collectionTimestamp(item), now))
+            .toList()
+          ..sort(
+            (a, b) =>
+                _collectionTimestamp(b).compareTo(_collectionTimestamp(a)),
+          );
     final totalTodayKg = todayCollections.fold<double>(
       0,
       (sum, item) => sum + (item.kgCollected ?? 0),
@@ -1056,7 +1056,9 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
                                                 focusNode:
                                                     _grossWeightFocusNode, // Attach the FocusNode here
                                                 textAlign: TextAlign.center,
-                                                readOnly: !_hasFarmerNumber() || !_isAdmin,
+                                                readOnly:
+                                                    !_hasFarmerNumber() ||
+                                                    !_isAdmin,
                                                 onTap: () {
                                                   if (!_hasFarmerNumber()) {
                                                     ScaffoldMessenger.of(
@@ -1514,10 +1516,10 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
 
       if (!mounted) return;
       _resetForNextCollectionSession();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(
-        const SnackBar(content: Text('Saved successfully. Printing receipt...')),
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Saved successfully. Printing receipt...'),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -1593,9 +1595,9 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Printing failed: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Printing failed: $error')));
     }
   }
 
@@ -1616,9 +1618,9 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
     _printToThermalPrinter(collection);
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Reprint queued.')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Reprint queued.')));
   }
 
   Future<void> _confirmReverseCollection(DailyCollection original) async {

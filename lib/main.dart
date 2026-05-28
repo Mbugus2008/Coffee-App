@@ -302,6 +302,7 @@ class _StartupPageState extends State<_StartupPage> {
     }
   }
 
+  //javascript:;
   @override
   Widget build(BuildContext context) {
     if (_loading) {
