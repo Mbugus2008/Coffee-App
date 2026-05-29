@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../data/daily_collection_repository.dart';
 import '../services/app_settings_store.dart';
 import '../services/bc/bc_odata_client.dart';
 import '../services/bc/bc_settings.dart';
@@ -228,6 +230,30 @@ class _BcSettingsPageState extends State<BcSettingsPage> with BackButtonGuard {
       _showCumulative ?? AppSettingsStore.showCumulativeOptions.first,
     );
 
+    DailyCollectionSyncResult? collectionSyncResult;
+    String? collectionSyncError;
+    try {
+      collectionSyncResult = await context
+          .read<DailyCollectionRepository>()
+          .syncWithBc();
+    } catch (error) {
+      collectionSyncError = error.toString();
+    }
+
+    var message = 'Settings saved.';
+    if (collectionSyncResult != null) {
+      final pendingPart = collectionSyncResult.attempted > 0
+          ? 'Pending sync: ${collectionSyncResult.synced}/${collectionSyncResult.attempted}'
+          : 'Pending sync: none';
+      final refreshPart = collectionSyncResult.refreshError == null
+          ? 'Pulled from BC: ${collectionSyncResult.fetchedFromBc}'
+          : 'BC pull failed';
+      message = 'Settings saved. $pendingPart. $refreshPart.';
+    } else if (collectionSyncError != null) {
+      message =
+          'Settings saved. Collections sync could not run: $collectionSyncError';
+    }
+
     if (!mounted) return;
     setState(() {
       _saving = false;
@@ -235,7 +261,7 @@ class _BcSettingsPageState extends State<BcSettingsPage> with BackButtonGuard {
 
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Settings saved.')));
+    ).showSnackBar(SnackBar(content: Text(message)));
 
     if (widget.onSaved != null) {
       try {

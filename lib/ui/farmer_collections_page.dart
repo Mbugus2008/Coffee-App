@@ -13,7 +13,8 @@ class FarmerCollectionsPage extends StatefulWidget {
   State<FarmerCollectionsPage> createState() => _FarmerCollectionsPageState();
 }
 
-class _FarmerCollectionsPageState extends State<FarmerCollectionsPage> with BackButtonGuard {
+class _FarmerCollectionsPageState extends State<FarmerCollectionsPage>
+    with BackButtonGuard {
   DateTime _selectedDate = DateTime.now();
   String _query = '';
 
@@ -21,7 +22,19 @@ class _FarmerCollectionsPageState extends State<FarmerCollectionsPage> with Back
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<DailyCollectionRepository>().loadCollections();
+      () async {
+        try {
+          await context.read<DailyCollectionRepository>().refreshFromServer();
+        } catch (error) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to pull collections from BC: $error'),
+            ),
+          );
+          await context.read<DailyCollectionRepository>().loadCollections();
+        }
+      }();
       context.read<FarmerRepository>().loadFarmers();
     });
   }
@@ -122,98 +135,103 @@ class _FarmerCollectionsPageState extends State<FarmerCollectionsPage> with Back
           farmer.name.toLowerCase().contains(query);
     }).toList();
 
-    return guard(Scaffold(
-      appBar: AppBar(
-        title: BrandedAppBarTitle(
-          'Farmer Collections • ${_formatDate(_selectedDate)}',
-        ),
-        automaticallyImplyLeading: false,
-        leading: IconButton(
-          tooltip: 'Back to home',
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            final navigator = Navigator.of(context);
-            if (navigator.canPop()) {
-              navigator.pop();
-            } else {
-              navigator.pushNamedAndRemoveUntil('/dashboard', (route) => false);
-            }
-          },
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Home',
-            icon: const Icon(Icons.home_outlined),
+    return guard(
+      Scaffold(
+        appBar: AppBar(
+          title: BrandedAppBarTitle(
+            'Farmer Collections • ${_formatDate(_selectedDate)}',
+          ),
+          automaticallyImplyLeading: false,
+          leading: IconButton(
+            tooltip: 'Back to home',
+            icon: const Icon(Icons.arrow_back),
             onPressed: () {
-              Navigator.of(context).pushNamed('/dashboard');
+              final navigator = Navigator.of(context);
+              if (navigator.canPop()) {
+                navigator.pop();
+              } else {
+                navigator.pushNamedAndRemoveUntil(
+                  '/dashboard',
+                  (route) => false,
+                );
+              }
             },
           ),
-          IconButton(
-            tooltip: 'Filter date',
-            icon: const Icon(Icons.calendar_today_outlined),
-            onPressed: _pickDate,
-          ),
-          IconButton(
-            tooltip: 'Filter farmer',
-            icon: const Icon(Icons.search),
-            onPressed: _openSearch,
-          ),
-          IconButton(
-            tooltip: 'Clear filters',
-            icon: const Icon(Icons.filter_alt_off_outlined),
-            onPressed: _clearFilters,
-          ),
-        ],
-      ),
-      body: filteredFarmers.isEmpty
-          ? const Center(child: Text('No farmers found.'))
-          : ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: filteredFarmers.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (context, index) {
-                final farmer = filteredFarmers[index];
-                final farmerNo = farmer.no.trim();
-                final total = totalsByFarmer[farmerNo] ?? 0;
-                final txnCount = transactionsByFarmer[farmerNo] ?? 0;
-
-                return Card(
-                  elevation: 0,
-                  color: Theme.of(context).colorScheme.surface,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    side: BorderSide(
-                      color: Theme.of(context).colorScheme.outlineVariant,
-                    ),
-                  ),
-                  child: ListTile(
-                    leading: CircleAvatar(
-                      backgroundColor: Theme.of(
-                        context,
-                      ).colorScheme.primaryContainer,
-                      child: Text(
-                        farmer.name.isNotEmpty
-                            ? farmer.name.substring(0, 1).toUpperCase()
-                            : '?',
-                      ),
-                    ),
-                    title: Text(farmer.name),
-                    subtitle: Text('${farmer.no} • Txn: $txnCount'),
-                    trailing: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        const Text('Daily Total'),
-                        Text(
-                          '${total.toStringAsFixed(2)} kg',
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
+          actions: [
+            IconButton(
+              tooltip: 'Home',
+              icon: const Icon(Icons.home_outlined),
+              onPressed: () {
+                Navigator.of(context).pushNamed('/dashboard');
               },
             ),
-    ));
+            IconButton(
+              tooltip: 'Filter date',
+              icon: const Icon(Icons.calendar_today_outlined),
+              onPressed: _pickDate,
+            ),
+            IconButton(
+              tooltip: 'Filter farmer',
+              icon: const Icon(Icons.search),
+              onPressed: _openSearch,
+            ),
+            IconButton(
+              tooltip: 'Clear filters',
+              icon: const Icon(Icons.filter_alt_off_outlined),
+              onPressed: _clearFilters,
+            ),
+          ],
+        ),
+        body: filteredFarmers.isEmpty
+            ? const Center(child: Text('No farmers found.'))
+            : ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: filteredFarmers.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 12),
+                itemBuilder: (context, index) {
+                  final farmer = filteredFarmers[index];
+                  final farmerNo = farmer.no.trim();
+                  final total = totalsByFarmer[farmerNo] ?? 0;
+                  final txnCount = transactionsByFarmer[farmerNo] ?? 0;
+
+                  return Card(
+                    elevation: 0,
+                    color: Theme.of(context).colorScheme.surface,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      side: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                    ),
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: Theme.of(
+                          context,
+                        ).colorScheme.primaryContainer,
+                        child: Text(
+                          farmer.name.isNotEmpty
+                              ? farmer.name.substring(0, 1).toUpperCase()
+                              : '?',
+                        ),
+                      ),
+                      title: Text(farmer.name),
+                      subtitle: Text('${farmer.no} • Txn: $txnCount'),
+                      trailing: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          const Text('Daily Total'),
+                          Text(
+                            '${total.toStringAsFixed(2)} kg',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+    );
   }
 }

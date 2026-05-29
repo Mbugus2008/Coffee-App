@@ -23,7 +23,18 @@ class _DailyCollectionsPageState extends State<DailyCollectionsPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<DailyCollectionRepository>().refreshFromServer();
+      () async {
+        try {
+          await context.read<DailyCollectionRepository>().refreshFromServer();
+        } catch (error) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to pull collections from BC: $error'),
+            ),
+          );
+        }
+      }();
       context.read<FarmerRepository>().loadFarmers();
     });
   }

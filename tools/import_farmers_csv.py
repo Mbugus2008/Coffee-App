@@ -14,7 +14,7 @@ CSV_PATH = r"C:\Users\mbugu\Downloads\members_export_1779952342993.csv"
 ENDPOINT = "http://test.trimline.co.ke:4548/BC240/ODataV4/Company('Rugi')/Farmers"
 USERNAME = "Philip"
 PASSWORD = "Password@2030"
-MAX_WORKERS = 20
+MAX_WORKERS = 50
 
 
 def make_auth_header():

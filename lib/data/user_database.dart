@@ -14,7 +14,7 @@ class UserDatabase {
   static final UserDatabase instance = UserDatabase._();
 
   static const _dbName = 'coffee.db';
-  static const _dbVersion = 13;
+  static const _dbVersion = 14;
   static const _tableCollectionSettings = 'collection_settings';
   static const _tableCompanyInfo = 'company_info';
   static const _tableUsers = 'users';
@@ -29,6 +29,38 @@ class UserDatabase {
   bool _storeSchemaEnsured = false;
   bool _companyInfoSchemaEnsured = false;
   bool _farmerSchemaEnsured = false;
+  String? _dailyCollectionsPkColumn;
+
+  Future<String> _getDailyCollectionsPkColumn(DatabaseExecutor db) async {
+    final cached = _dailyCollectionsPkColumn;
+    if (cached != null) {
+      return cached;
+    }
+    final columns = await db.rawQuery(
+      'PRAGMA table_info($_tableDailyCollections)',
+    );
+    final hasCollectionNo = columns.any(
+      (row) => (row['name'] as String?) == 'Collection_No',
+    );
+    final resolved = hasCollectionNo ? 'Collection_No' : 'No_';
+    _dailyCollectionsPkColumn = resolved;
+    return resolved;
+  }
+
+  Map<String, Object?> _dailyCollectionDbMap(
+    DailyCollection item, {
+    required String pkColumn,
+  }) {
+    final values = item.toMap();
+    if (pkColumn == 'Collection_No') {
+      values.remove('No_');
+      values['Collection_No'] = item.no;
+    } else {
+      values.remove('Collection_No');
+      values['No_'] = item.no;
+    }
+    return values;
+  }
 
   Future<Database> get database async {
     final db = _database;
@@ -111,7 +143,7 @@ class UserDatabase {
           'Collections_Date TEXT NOT NULL, '
           'Collection_Number TEXT NOT NULL, '
           'Coffee_Type TEXT NOT NULL, '
-          'No_ INTEGER PRIMARY KEY, '
+          'Collection_No INTEGER PRIMARY KEY, '
           'Farmers_Name TEXT NOT NULL, '
           'Kg__Collected REAL, '
           'Cancelled TEXT NOT NULL, '
@@ -194,7 +226,7 @@ class UserDatabase {
             'Collections_Date TEXT NOT NULL, '
             'Collection_Number TEXT NOT NULL, '
             'Coffee_Type TEXT NOT NULL, '
-            'No_ INTEGER PRIMARY KEY, '
+            'Collection_No INTEGER PRIMARY KEY, '
             'Farmers_Name TEXT NOT NULL, '
             'Kg__Collected REAL, '
             'Cancelled TEXT NOT NULL, '
@@ -247,6 +279,11 @@ class UserDatabase {
         }
         if (oldVersion < 13) {
           await _ensureFarmerSchema(db);
+        }
+        if (oldVersion < 14) {
+          await db.execute(
+            'ALTER TABLE $_tableDailyCollections RENAME COLUMN No_ TO Collection_No',
+          );
         }
       },
     );
@@ -687,10 +724,14 @@ class UserDatabase {
 
   Future<void> replaceDailyCollections(List<DailyCollection> items) async {
     final db = await database;
+    final pkColumn = await _getDailyCollectionsPkColumn(db);
     await db.transaction((txn) async {
       await txn.delete(_tableDailyCollections);
       for (final item in items) {
-        await txn.insert(_tableDailyCollections, item.toMap());
+        await txn.insert(
+          _tableDailyCollections,
+          _dailyCollectionDbMap(item, pkColumn: pkColumn),
+        );
       }
     });
   }
@@ -699,6 +740,7 @@ class UserDatabase {
     List<DailyCollection> items,
   ) async {
     final db = await database;
+    final pkColumn = await _getDailyCollectionsPkColumn(db);
     final pendingRows = await db.query(
       _tableDailyCollections,
       where: 'COALESCE(Sent, 0) = 0',
@@ -710,14 +752,14 @@ class UserDatabase {
       for (final item in items) {
         await txn.insert(
           _tableDailyCollections,
-          item.toMap(),
+          _dailyCollectionDbMap(item, pkColumn: pkColumn),
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
       for (final item in pendingItems) {
         await txn.insert(
           _tableDailyCollections,
-          item.toMap(),
+          _dailyCollectionDbMap(item, pkColumn: pkColumn),
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
@@ -735,15 +777,17 @@ class UserDatabase {
 
   Future<void> insertDailyCollection(DailyCollection item) async {
     final db = await database;
+    final pkColumn = await _getDailyCollectionsPkColumn(db);
     await db.insert(
       _tableDailyCollections,
-      item.toMap(),
+      _dailyCollectionDbMap(item, pkColumn: pkColumn),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
   Future<void> insertPendingDailyCollection(DailyCollection item) async {
     final db = await database;
+    final pkColumn = await _getDailyCollectionsPkColumn(db);
     final pendingItem = DailyCollection(
       farmersNumber: item.farmersNumber,
       collectionsDate: item.collectionsDate,
@@ -773,17 +817,18 @@ class UserDatabase {
     );
     await db.insert(
       _tableDailyCollections,
-      pendingItem.toMap(),
+      _dailyCollectionDbMap(pendingItem, pkColumn: pkColumn),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
 
   Future<List<DailyCollection>> getPendingDailyCollections() async {
     final db = await database;
+    final pkColumn = await _getDailyCollectionsPkColumn(db);
     final rows = await db.query(
       _tableDailyCollections,
       where: 'COALESCE(Sent, 0) = 0',
-      orderBy: 'Collections_Date DESC, No_ DESC',
+      orderBy: 'Collections_Date DESC, $pkColumn DESC',
     );
     return rows.map(DailyCollection.fromMap).toList();
   }
@@ -794,6 +839,7 @@ class UserDatabase {
     String? error,
   }) async {
     final db = await database;
+    final pkColumn = await _getDailyCollectionsPkColumn(db);
     final normalizedStatus = status.trim().toLowerCase();
     final values = <String, Object?>{
       'Sent': normalizedStatus == 'synced' ? 1 : 0,
@@ -802,7 +848,7 @@ class UserDatabase {
     return db.update(
       _tableDailyCollections,
       values,
-      where: 'No_ = ?',
+      where: '$pkColumn = ?',
       whereArgs: [no],
     );
   }

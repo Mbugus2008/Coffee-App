@@ -232,6 +232,12 @@ class _StartupPageState extends State<_StartupPage> {
     try {
       await CollectionSettingsService.instance.syncFromBcSetup();
     } catch (_) {}
+
+    // Pull all existing collections from BC so local cumulative totals
+    // are accurate even on a fresh install or a new device.
+    try {
+      await context.read<DailyCollectionRepository>().refreshFromServer();
+    } catch (_) {}
   }
 
   Future<void> _decide() async {

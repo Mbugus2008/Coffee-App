@@ -103,7 +103,9 @@ class BcODataClient {
   Future<Map<String, Object?>> create(
     BcSettings settings,
     String serviceName,
-    Map<String, Object?> payload,
+    Map<String, Object?> payload, {
+    bool allowDuplicateKeyExists = false,
+  }
   ) async {
     final uri = _collectionUri(settings, serviceName);
     late final http.Response resp;
@@ -125,6 +127,15 @@ class BcODataClient {
     }
 
     if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      if (allowDuplicateKeyExists && _isDuplicateKeyError(resp.body)) {
+        debugPrint(
+          'BC POST duplicate key treated as success\n'
+          'URL: $uri\n'
+          'Status: ${resp.statusCode}\n'
+          'Payload: ${_formatPayload(payload)}',
+        );
+        return <String, Object?>{'_duplicateKey': true};
+      }
       _logHttpFailure(
         method: 'POST',
         uri: uri,
@@ -139,6 +150,29 @@ class BcODataClient {
       return decoded.cast<String, Object?>();
     }
     return <String, Object?>{};
+  }
+
+  bool _isDuplicateKeyError(String responseBody) {
+    try {
+      final decoded = jsonDecode(responseBody);
+      if (decoded is Map<String, Object?>) {
+        final error = decoded['error'];
+        if (error is Map<String, Object?>) {
+          final code = (error['code'] as String?)?.toLowerCase() ?? '';
+          final message = (error['message'] as String?)?.toLowerCase() ?? '';
+          return code.contains('entitywithsamekeyexists') ||
+              (message.contains('already exists') &&
+                  message.contains('identification fields'));
+        }
+      }
+    } catch (_) {
+      // Ignore parse errors and fall back to raw text matching.
+    }
+
+    final body = responseBody.toLowerCase();
+    return body.contains('entitywithsamekeyexists') ||
+        (body.contains('already exists') &&
+            body.contains('identification fields'));
   }
 
   Future<void> patchByOdataId(

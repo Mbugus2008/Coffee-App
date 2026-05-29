@@ -24,6 +24,8 @@ class DailyCollectionSyncResult {
     required this.attempted,
     required this.synced,
     required this.failed,
+    this.fetchedFromBc = 0,
+    this.refreshError,
     this.lastError,
     this.failureDetails = const [],
   });
@@ -31,6 +33,8 @@ class DailyCollectionSyncResult {
   final int attempted;
   final int synced;
   final int failed;
+  final int fetchedFromBc;
+  final String? refreshError;
   final String? lastError;
   final List<String> failureDetails;
 }
@@ -42,6 +46,13 @@ class DailyCollectionRepository extends ChangeNotifier {
   final UserDatabase _db;
   final DailyCollectionApi _api;
   final List<DailyCollection> _items = [];
+
+  bool _isDuplicateCollectionError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('internal_entitywithsamekeyexists') ||
+        (message.contains('already exists') &&
+            message.contains('collection number'));
+  }
 
   List<DailyCollection> get items => List.unmodifiable(_items);
 
@@ -58,14 +69,11 @@ class DailyCollectionRepository extends ChangeNotifier {
     await loadCollections();
   }
 
-  Future<void> refreshFromServer() async {
-    try {
-      final items = await _api.fetchDailyCollections();
-      await syncFromServer(items);
-      await UserRepository(_db).retryPendingPasswordSyncs();
-    } catch (_) {
-      // If BC fetch fails, keep the last loaded list.
-    }
+  Future<int> refreshFromServer() async {
+    final items = await _api.fetchDailyCollections();
+    await syncFromServer(items);
+    await UserRepository(_db).retryPendingPasswordSyncs();
+    return items.length;
   }
 
   Future<DailyCollectionSyncResult> syncPendingToBc({int? onlyNo}) async {
@@ -96,6 +104,18 @@ class DailyCollectionRepository extends ChangeNotifier {
         );
         synced += 1;
       } catch (error) {
+        if (_isDuplicateCollectionError(error)) {
+          await _db.updateDailyCollectionBcSyncStatus(
+            no: item.no,
+            status: 'synced',
+          );
+          synced += 1;
+          debugPrint(
+            'Collection already exists in BC, marking as synced locally: ${item.collectionNumber}',
+          );
+          continue;
+        }
+
         lastError = error.toString();
         failed += 1;
         final collectionNumber = item.collectionNumber.trim().isEmpty
@@ -122,9 +142,31 @@ class DailyCollectionRepository extends ChangeNotifier {
   }
 
   Future<DailyCollectionSyncResult> syncWithBc() async {
-    final result = await syncPendingToBc();
-    await refreshFromServer();
-    return result;
+    final pendingResult = await syncPendingToBc();
+    var fetchedFromBc = 0;
+    String? refreshError;
+
+    try {
+      fetchedFromBc = await refreshFromServer();
+    } catch (error) {
+      refreshError = error.toString();
+      debugPrint('Failed to refresh collections from BC: $error');
+    }
+
+    final combinedFailures = <String>[
+      ...pendingResult.failureDetails,
+      if (refreshError != null) 'Refresh from BC failed: $refreshError',
+    ];
+
+    return DailyCollectionSyncResult(
+      attempted: pendingResult.attempted,
+      synced: pendingResult.synced,
+      failed: pendingResult.failed,
+      fetchedFromBc: fetchedFromBc,
+      refreshError: refreshError,
+      lastError: pendingResult.lastError ?? refreshError,
+      failureDetails: combinedFailures,
+    );
   }
 
   Future<DailyCollectionSaveResult> addCollection(DailyCollection item) async {

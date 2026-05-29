@@ -79,6 +79,13 @@ class _AddFarmerPageState extends State<AddFarmerPage> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
+    if ((_selectedFactory ?? '').trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select a factory before saving.')),
+      );
+      return;
+    }
+
     if (_isDuplicateFarmerNo()) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Farmer number already exists.')),

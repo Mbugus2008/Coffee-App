@@ -60,6 +60,7 @@ class BcServices {
       settings,
       'DailyCollections',
       _dailyCollectionPayload(item),
+      allowDuplicateKeyExists: true,
     );
   }
 
@@ -75,7 +76,6 @@ class BcServices {
 
   Map<String, Object?> _dailyCollectionPayload(DailyCollection item) {
     return {
-      'No': item.no,
       'Farmers_Number': item.farmersNumber,
       'Farmers_Name': item.farmersName,
       'Collections_Date': _formatBcDate(item.collectionsDate),
