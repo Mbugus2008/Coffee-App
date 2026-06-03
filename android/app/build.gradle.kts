@@ -5,6 +5,54 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// ──────────────────────────────────────────────
+// Signing configuration
+// Supports:
+//   1. LOCAL:   android/key.properties file
+//   2. CI/CD:   Environment variables (GitHub Secrets)
+// ──────────────────────────────────────────────
+import java.util.Properties
+import java.io.File
+
+fun loadSigningConfig(): Map<String, String>? {
+    // 1. Try local key.properties first
+    val keyPropsFile = rootProject.file("key.properties")
+    if (keyPropsFile.exists()) {
+        val props = Properties()
+        keyPropsFile.inputStream().use { stream ->
+            props.load(stream)
+        }
+        val storeFile = props.getProperty("storeFile")?.let {
+            rootProject.file(it).absolutePath
+        }
+        if (storeFile != null && File(storeFile).exists()) {
+            return mapOf(
+                "storeFile" to storeFile,
+                "storePassword" to props.getProperty("storePassword", ""),
+                "keyAlias" to props.getProperty("keyAlias", ""),
+                "keyPassword" to props.getProperty("keyPassword", "")
+            )
+        }
+    }
+
+    // 2. Fall back to CI environment variables
+    val storeFile = System.getenv("ANDROID_KEYSTORE_PATH")
+    val storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+    val keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+    val keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+
+    if (!storeFile.isNullOrBlank() && File(storeFile).exists()) {
+        return mapOf(
+            "storeFile" to storeFile,
+            "storePassword" to (storePassword ?: ""),
+            "keyAlias" to (keyAlias ?: ""),
+            "keyPassword" to (keyPassword ?: "")
+        )
+    }
+
+    return null
+}
+
 android {
     namespace = "com.trimline.coffee"
     compileSdk = flutter.compileSdkVersion
@@ -19,11 +67,20 @@ android {
         jvmTarget = JavaVersion.VERSION_11.toString()
     }
 
+    signingConfigs {
+        create("release") {
+            val config = loadSigningConfig()
+            if (config != null) {
+                storeFile = File(config["storeFile"]!!)
+                storePassword = config["storePassword"]
+                keyAlias = config["keyAlias"]
+                keyPassword = config["keyPassword"]
+            }
+        }
+    }
+
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.trimline.coffee"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -32,9 +89,16 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            val releaseSigning = signingConfigs.findByName("release")
+            if (releaseSigning != null &&
+                releaseSigning.storeFile != null &&
+                releaseSigning.storeFile!!.exists()
+            ) {
+                signingConfig = releaseSigning
+            } else {
+                // Fall back to debug signing (for dev builds)
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 }

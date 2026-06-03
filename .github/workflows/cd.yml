@@ -1,0 +1,187 @@
+name: CD — Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'          # e.g. v1.0.2, v1.1.0
+  workflow_dispatch:   # allow manual trigger
+    inputs:
+      build_mode:
+        description: 'Build mode'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version:
+    name: 🔖 Read Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📋 Extract version from pubspec.yaml
+        id: get-version
+        shell: bash
+        run: |
+          VERSION=$(grep '^version: ' pubspec.yaml | sed 's/version: //' | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "App version: $VERSION"
+
+  analyze:
+    name: ✅ Analyze & Test
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🎯 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: 📦 Get dependencies
+        run: flutter pub get
+
+      - name: 🔍 Analyze
+        run: flutter analyze
+
+      - name: 🧪 Test
+        run: flutter test
+
+  build-android:
+    name: 📱 Build Android (${{ github.event.inputs.build_mode || 'release' }})
+    needs: [version, analyze]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      BUILD_MODE: ${{ github.event.inputs.build_mode || 'release' }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🎯 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: 📦 Get dependencies
+        run: flutter pub get
+
+      - name: 🔑 Decode keystore (for signed release)
+        if: env.BUILD_MODE == 'release'
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "${{ runner.temp }}/upload-keystore.jks"
+            echo "✅ Keystore decoded"
+          else
+            echo "⚠️  No ANDROID_KEYSTORE_BASE64 secret set — build will use debug signing"
+          fi
+
+      - name: 🏗️ Build Android APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/upload-keystore.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ "$BUILD_MODE" = "release" ]; then
+            flutter build apk --release --split-per-abi
+            flutter build appbundle --release
+          else
+            flutter build apk --debug
+          fi
+
+      - name: 📤 Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ env.BUILD_MODE }}
+          path: build/app/outputs/flutter-apk/*.apk
+          retention-days: 14
+
+      - name: 📤 Upload AppBundle artifacts
+        if: env.BUILD_MODE == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-appbundle
+          path: build/app/outputs/bundle/release/*.aab
+          retention-days: 14
+
+  release:
+    name: 🚀 Create GitHub Release
+    needs: [version, build-android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 📥 Download APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk-release
+          path: artifacts/apk
+
+      - name: 📥 Download AppBundle
+        uses: actions/download-artifact@v4
+        with:
+          name: android-appbundle
+          path: artifacts/bundle
+
+      - name: 📝 Generate release notes
+        id: release-notes
+        shell: bash
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          cat > artifacts/release-notes.md << EOF
+          ## ☕ Coffee App v${VERSION}
+
+          ### 📱 Downloads
+          | File | Description |
+          |------|-------------|
+          | `app-arm64-v8a-release.apk` | For modern Android devices (64-bit) |
+          | `app-armeabi-v7a-release.apk` | For older Android devices (32-bit) |
+          | `app-x86_64-release.apk` | For x86 emulators / ChromeOS |
+          | `app-release.aab` | Google Play Store bundle |
+
+          ### ✅ Checksums
+          EOF
+          for f in artifacts/apk/*.apk artifacts/bundle/*.aab; do
+            [ -f "$f" ] && echo "- \`$(sha256sum "$f" | cut -d' ' -f1)\`  $(basename "$f")" >> artifacts/release-notes.md
+          done
+
+      - name: 🏷️ Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Coffee App v${{ needs.version.outputs.version }}
+          body_path: artifacts/release-notes.md
+          files: |
+            artifacts/apk/*.apk
+            artifacts/bundle/*.aab
+          generate_release_notes: false
+          draft: false
+          prerelease: false

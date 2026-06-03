@@ -20,14 +20,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run daily update script
+      - name: 🎯 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: 📦 Update dependencies
         shell: bash
         run: |
           set -euo pipefail
-          # Add project-specific update commands here.
-          # Example:
-          # flutter pub get
-          # flutter pub outdated || true
+          flutter pub get
+          flutter pub upgrade --major-versions 2>/dev/null || true
+          flutter pub outdated 2>/dev/null || true
 
       - name: Commit and push when changed
         shell: bash

@@ -526,8 +526,7 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
         .where((item) {
           return item.farmersNumber.trim().toLowerCase() ==
                   normalizedFarmerNo &&
-              _isSameDate(_collectionTimestamp(item), day) &&
-              !_isReversalEntry(item);
+              _isSameDate(_collectionTimestamp(item), day);
         })
         .fold(0.0, (sum, item) => sum + (item.kgCollected ?? 0));
   }
@@ -770,60 +769,107 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
                                                   },
                                                 );
                                               },
-                                          optionsViewBuilder:
-                                              (context, onSelected, options) {
-                                                return Align(
-                                                  alignment: Alignment.topLeft,
-                                                  child: Material(
-                                                    elevation: 4,
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                          16,
-                                                        ),
-                                                    child: SizedBox(
-                                                      width:
-                                                          MediaQuery.of(
-                                                            context,
-                                                          ).size.width -
-                                                          32,
-                                                      child: ListView.separated(
-                                                        padding:
-                                                            const EdgeInsets.symmetric(
-                                                              vertical: 8,
-                                                            ),
-                                                        shrinkWrap: true,
-                                                        itemCount:
-                                                            options.length,
-                                                        separatorBuilder:
-                                                            (_, __) =>
-                                                                const Divider(
-                                                                  height: 1,
+                                          optionsViewBuilder: (context, onSelected, options) {
+                                            return Align(
+                                              alignment: Alignment.topLeft,
+                                              child: OverflowBox(
+                                                alignment: Alignment.topLeft,
+                                                maxWidth: MediaQuery.of(
+                                                  context,
+                                                ).size.width,
+                                                child: Material(
+                                                  elevation: 4,
+                                                  borderRadius:
+                                                      BorderRadius.circular(16),
+                                                  child: SizedBox(
+                                                    width:
+                                                        MediaQuery.of(
+                                                          context,
+                                                        ).size.width -
+                                                        32,
+                                                    child: ListView.separated(
+                                                      padding:
+                                                          const EdgeInsets.symmetric(
+                                                            vertical: 8,
+                                                          ),
+                                                      shrinkWrap: true,
+                                                      itemCount: options.length,
+                                                      separatorBuilder:
+                                                          (_, __) =>
+                                                              const Divider(
+                                                                height: 1,
+                                                              ),
+                                                      itemBuilder: (context, index) {
+                                                        final farmer = options
+                                                            .elementAt(index);
+                                                        return ListTile(
+                                                          title: Text(
+                                                            farmer.no,
+                                                          ),
+                                                          subtitle: Row(
+                                                            children: [
+                                                              if (farmer
+                                                                      .multipleDelivery ==
+                                                                  true)
+                                                                Padding(
+                                                                  padding:
+                                                                      const EdgeInsets.only(
+                                                                        right:
+                                                                            4,
+                                                                      ),
+                                                                  child: Icon(
+                                                                    Icons
+                                                                        .repeat,
+                                                                    size: 16,
+                                                                    color: Theme.of(
+                                                                      context,
+                                                                    ).colorScheme.primary,
+                                                                  ),
                                                                 ),
-                                                        itemBuilder:
-                                                            (context, index) {
-                                                              final farmer =
-                                                                  options
-                                                                      .elementAt(
-                                                                        index,
-                                                                      );
-                                                              return ListTile(
-                                                                title: Text(
-                                                                  farmer.no,
-                                                                ),
-                                                                subtitle: Text(
+                                                              Flexible(
+                                                                child: Text(
                                                                   farmer.name,
+                                                                  overflow:
+                                                                      TextOverflow
+                                                                          .ellipsis,
                                                                 ),
-                                                                onTap: () =>
-                                                                    onSelected(
-                                                                      farmer,
+                                                              ),
+                                                              if (farmer
+                                                                      .multipleDelivery ==
+                                                                  true)
+                                                                Padding(
+                                                                  padding:
+                                                                      const EdgeInsets.only(
+                                                                        left: 4,
+                                                                      ),
+                                                                  child: Text(
+                                                                    '(Multiple)',
+                                                                    style: TextStyle(
+                                                                      fontSize:
+                                                                          11,
+                                                                      color: Theme.of(
+                                                                        context,
+                                                                      ).colorScheme.primary,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w500,
                                                                     ),
-                                                              );
-                                                            },
-                                                      ),
+                                                                  ),
+                                                                ),
+                                                            ],
+                                                          ),
+                                                          onTap: () =>
+                                                              onSelected(
+                                                                farmer,
+                                                              ),
+                                                        );
+                                                      },
                                                     ),
                                                   ),
-                                                );
-                                              },
+                                                ),
+                                              ),
+                                            );
+                                          },
                                         ),
                                       ),
                                       const SizedBox(width: 12),
@@ -831,16 +877,94 @@ class _AddCollectionPageState extends State<AddCollectionPage> {
                                         child: Container(
                                           alignment: Alignment.centerLeft,
                                           padding: const EdgeInsets.all(8),
-                                          child: Text(
-                                            _farmerName.isEmpty
-                                                ? 'Farmer name'
-                                                : _farmerName,
-                                            style: theme.textTheme.bodyMedium
-                                                ?.copyWith(
-                                                  color: _farmerName.isEmpty
-                                                      ? colors.onSurfaceVariant
-                                                      : colors.onSurface,
+                                          child: Row(
+                                            children: [
+                                              if (_farmerName.isNotEmpty)
+                                                Builder(
+                                                  builder: (ctx) {
+                                                    final farmersList = ctx
+                                                        .watch<
+                                                          FarmerRepository
+                                                        >()
+                                                        .farmers;
+                                                    final farmer = farmersList
+                                                        .where(
+                                                          (f) =>
+                                                              f.no
+                                                                  .trim()
+                                                                  .toLowerCase() ==
+                                                              _farmerNumber
+                                                                  .trim()
+                                                                  .toLowerCase(),
+                                                        )
+                                                        .firstOrNull;
+                                                    if (farmer
+                                                            ?.multipleDelivery ==
+                                                        true) {
+                                                      return Row(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        children: [
+                                                          Padding(
+                                                            padding:
+                                                                const EdgeInsets.only(
+                                                                  right: 4,
+                                                                ),
+                                                            child: Icon(
+                                                              Icons.repeat,
+                                                              size: 16,
+                                                              color:
+                                                                  Theme.of(
+                                                                        context,
+                                                                      )
+                                                                      .colorScheme
+                                                                      .primary,
+                                                            ),
+                                                          ),
+                                                          Text(
+                                                            '(Multiple)',
+                                                            style: TextStyle(
+                                                              fontSize: 11,
+                                                              color:
+                                                                  Theme.of(
+                                                                        context,
+                                                                      )
+                                                                      .colorScheme
+                                                                      .primary,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w500,
+                                                            ),
+                                                          ),
+                                                          const SizedBox(
+                                                            width: 4,
+                                                          ),
+                                                        ],
+                                                      );
+                                                    }
+                                                    return const SizedBox.shrink();
+                                                  },
                                                 ),
+                                              Flexible(
+                                                child: Text(
+                                                  _farmerName.isEmpty
+                                                      ? 'Farmer name'
+                                                      : _farmerName,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: theme
+                                                      .textTheme
+                                                      .bodyMedium
+                                                      ?.copyWith(
+                                                        color:
+                                                            _farmerName.isEmpty
+                                                            ? colors
+                                                                  .onSurfaceVariant
+                                                            : colors.onSurface,
+                                                      ),
+                                                ),
+                                              ),
+                                            ],
                                           ),
                                         ),
                                       ),

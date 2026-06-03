@@ -44,6 +44,11 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Android keystore (local)
+android/key.properties
+android/*.jks
+android/*.keystore
+
 # Local app data and diagnostics
 *.db
 .tmp_*.db
